@@ -18,11 +18,13 @@ PHYSICS_SIMULATOR:
   RGB_SENSOR:
     WIDTH: 256
     HEIGHT: 256
-    POSITION: [0, 0.65, 0]
+    POSITION: [0, 0.45, 0]
+    #POSITION: [0, 0.65, 0]
   DEPTH_SENSOR:
     WIDTH: 256
     HEIGHT: 256
-    POSITION: [0, 0.65, 0]
+    POSITION: [0, 0.45, 0]
+    #POSITION: [0, 0.65, 0]
     NORMALIZE_DEPTH: False
 
 TASK:
@@ -41,6 +43,8 @@ DATASET:
   TYPE: PointNav-v1
   SPLIT: test
   DATA_PATH: data/datasets/pointnav/mp3d/v1/{split}/{split}.json.gz
+  # SPLIT: 1LXtFkjw3qL
+  # DATA_PATH: data/datasets/pointnav/mp3d/v1/train/content/{split}.json.gz
 
 VIDEO_OPTION: ["disk"]
 VIDEO_DIR: "videos/test_habitat_evaluator_with_physics/"

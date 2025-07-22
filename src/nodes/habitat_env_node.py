@@ -448,6 +448,9 @@ class HabitatEnvNode:
             if sensor_uuid in ["rgb", "depth", "pointgoal_with_gps_compass"]:
                 h = Header()
                 h.stamp = t_curr
+                #EDIT
+                h.frame_id = "laser" #camera_rgb_optical_frame
+                #EDIT
                 sensor_msg.header = h
                 observations_ros[sensor_uuid] = sensor_msg
 
@@ -508,6 +511,13 @@ class HabitatEnvNode:
         Requires 1) being called only when evaluation has been enabled and
         2) being called only from the main thread.
         """
+
+        st = self.env._env._sim.get_agent_state()
+
+        print("Habitat Position", st.position)
+        print("Habitat rotation", st.rotation.x, st.rotation.y, st.rotation.z, st.rotation.w)
+        print("Habitat velocity", st.velocity)
+        print("Habitat angular velocity", st.angular_velocity)
         
         with self.command_cv:
             # wait for new action before stepping

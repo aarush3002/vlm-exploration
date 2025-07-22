@@ -1,0 +1,12 @@
+7,8,6,5,4,0,1,2,3
+decision point
+
+I have entered a new room (node 4). My objective is to explore it and find any new exits.
+
+1.  **Image 7** is ranked first. It shows a clear, unobstructed view into what appears to be a bathroom, a completely new and unexplored area. The path is open and leads directly to this new space.
+2.  **Image 8** is a close second. It also points towards the new bathroom area but is slightly obstructed by the doorway. It's a very good, but less direct, path compared to image 7.
+3.  **Images 6, 5, and 4** are ranked next as they point back towards the room I just left (node 3). The traversal graph confirms this is a previously visited area. Backtracking is inefficient, so these are poor choices for new exploration. Image 6 has the clearest path back, while 4 and 5 are more obstructed.
+4.  **Image 0** points directly at a large cabinet, an immediate obstacle.
+5.  **Images 1, 2, and 3** show a closed door and walls, none of which are traversable paths. These are the worst options.
+
+This is a "decision point" because while the primary goal is to explore the new bathroom (Images 7 and 8), one could also choose to turn around and explore the other side of the previous room (visible in Image 5). However, a completely new room (the bathroom) is the much higher priority target for exploration. Since there is one clear and superior path (the bathroom) and one less desirable but still viable path (back to the other room), it qualifies as a decision point.

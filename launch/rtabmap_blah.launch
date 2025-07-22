@@ -1,0 +1,82 @@
+<?xml version="1.0"?>
+<launch>
+
+  <!-- ───────────── 0. House‑keeping ─────────────────────────────────── -->
+  <arg   name="geotiff_map_file_path" default="$(find hector_geotiff)/maps"/>
+  <param name="/use_sim_time"         value="false"/>
+
+  <!-- world ▸ map (static) -->
+  <node pkg="tf" type="static_transform_publisher" name="static_tf0"
+        args="1 0 0 0 0 0 /world /map 100"/>
+
+  <!-- RViz (optional) -->
+  <node pkg="rviz" type="rviz" name="rviz"
+        args="-d $(find hector_slam_launch)/rviz_cfg/mapping_demo.rviz"/>
+
+  <!-- Hector 2‑D SLAM (laser only) -->
+  <include file="$(find ros_x_habitat)/launch/hector_mapping_default.launch"/>
+
+
+  <!-- ───────────── 1. RGB‑D synchroniser (0.21) ─────────────────────── -->
+  <!-- Stand‑alone nodelet.  In cameras with their own nodelet manager,
+       prefer <nodelet load … manager:=…>.                           -->
+  <node pkg="nodelet" type="nodelet" name="rgbd_sync"
+        args="standalone rtabmap_sync/rgbd_sync" output="screen">
+    <remap from="rgb/image"       to="rgb"/>
+    <remap from="depth/image"     to="depth"/>
+    <remap from="rgb/camera_info" to="camera_info"/>
+    <!-- output -->
+    <remap from="rgbd_image"      to="rgbd_image"/>
+    <param name="approx_sync" value="true"/>
+  </node>
+
+
+  <!-- ───────────── 2. ICP odometry (laser‑based) ────────────────────── -->
+  <node pkg="rtabmap_odom" type="icp_odometry" name="icp_odometry" output="screen">
+    <!-- frames -->
+    <param name="frame_id"      value="base_frame"/>
+    <param name="odom_frame_id" value="odom"/>
+
+    <!-- we already have /scan from depthimage_to_laserscan -->
+    <param name="subscribe_scan" value="true"/>
+
+    <!-- (optional) tiny bit of tuning -->
+    <param name="Reg/Strategy"                  value="1"/>   <!-- ICP -->
+    <param name="Icp/VoxelSize"                 value="0.05"/>
+    <param name="Icp/MaxCorrespondenceDistance" value="0.1"/>
+
+    <!-- publish Odometry on /icp_odom (instead of /odom) -->
+    <remap from="odom" to="icp_odom"/>
+  </node>
+
+
+  <!-- ───────────── 3. RTAB‑Map SLAM core (0.21) ─────────────────────── -->
+  <node pkg="rtabmap_slam" type="rtabmap" name="rtabmap"
+        output="screen" args="--delete_db_on_start">
+
+    <!-- Input & frame settings -->
+    <param name="frame_id"        value="base_frame"/>
+    <param name="subscribe_depth" value="false"/>
+    <param name="subscribe_rgbd"  value="true"/>
+    <param name="subscribe_scan"  value="true"/>
+    <param name="queue_size"      value="10"/>
+
+    <!-- topic remaps -->
+    <remap from="odom"       to="icp_odom"/>   <!-- ← ICP odometry -->
+    <remap from="scan"       to="scan"/>
+    <remap from="rgbd_image" to="rgbd_image"/>
+
+    <!-- RTAB‑Map tuning -->
+    <param name="RGBD/NeighborLinkRefining"      value="true"/>
+    <param name="RGBD/ProximityBySpace"          value="true"/>
+    <param name="RGBD/AngularUpdate"             value="0.01"/>
+    <param name="RGBD/LinearUpdate"              value="0.01"/>
+    <param name="RGBD/OptimizeFromGraphEnd"      value="false"/>
+    <param name="Grid/FromDepth"                 value="false"/>  <!-- use lidar -->
+    <param name="Reg/Force3DoF"                  value="true"/>
+    <param name="Reg/Strategy"                   value="1"/>      <!-- ICP -->
+    <param name="Icp/VoxelSize"                  value="0.05"/>
+    <param name="Icp/MaxCorrespondenceDistance"  value="0.1"/>
+  </node>
+
+</launch>
