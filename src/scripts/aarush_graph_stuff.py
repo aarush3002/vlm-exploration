@@ -26,6 +26,7 @@ class Graph:
     def __init__(self):
         self.adj_list = defaultdict(list)
         self.vertex_labels = {}
+        self.vertex_to_counter = {}
         self.counter = 0
     
     def create_edge(self, vertex1, vertex2):
@@ -35,9 +36,11 @@ class Graph:
 
         if self.counter == 0:
             self.vertex_labels[self.counter] = vertex1
+            self.vertex_to_counter[vertex1] = self.counter
         
         self.counter += 1
         self.vertex_labels[self.counter] = vertex2
+        self.vertex_to_counter[vertex2] = self.counter
 
     
     def dijkstra(self, start, end):
@@ -78,6 +81,26 @@ class Graph:
                     heapq.heappush(pq, (distance, neighbor))
 
         return []  # Return an empty path if no path is found
+    
+    def total_edge_distance(self):
+        """
+        Calculates the total sum of all unique edge distances in the graph.
+        """
+        total_distance = 0.0
+        counted_edges = set()
+
+        for vertex, neighbors in self.adj_list.items():
+            for neighbor, distance in neighbors:
+                # Create a unique, order-independent key for each edge
+                # A frozenset is used because it's hashable and order doesn't matter
+                edge = frozenset([vertex, neighbor])
+                
+                # If we haven't already counted this edge, add its distance
+                if edge not in counted_edges:
+                    total_distance += distance
+                    counted_edges.add(edge)
+        
+        return total_distance
 
     def visualize(
         self, 

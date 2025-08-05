@@ -1,14 +1,51 @@
-TrajectoryPlannerROS:
-  max_vel_x: 2.0
-  min_vel_x: -0.1
-  max_vel_theta: 5
-  min_in_place_vel_theta: -3
+# TrajectoryPlannerROS:
+#   max_vel_x: 2.0
+#   min_vel_x: -0.1
+#   max_vel_theta: 5
+#   min_in_place_vel_theta: -3
 
-  acc_lim_theta: 2.5
-  acc_lim_x: 2.5
-  acc_lim_y: 2.5
+#   acc_lim_theta: 2.5
+#   acc_lim_x: 2.5
+#   acc_lim_y: 2.5
+
+#   holonomic_robot: false
+#   meter_scoring: true
+
+#   controller_frequency: 10.0 #20.0
+#   # Goal Tolerance Parameters
+#   xy_goal_tolerance: 0.10
+#   # Set a very high tolerance to ignore the orientation part of the goal
+#   yaw_goal_tolerance: 6.28
+
+# In navigation_params/base_local_planner_params.yaml
+TrajectoryPlannerROS:
+  # Robot Configuration Parameters
+  max_vel_x: 2.4
+  min_vel_x: 1.2
+  max_vel_theta: 1.0
+  min_in_place_vel_theta: 0.4
+
+  acc_lim_theta: 2.5 #1.5
+  acc_lim_x: 2.5 #1.0
+  acc_lim_y: 2.5 #1.0
+
+  # Goal Tolerance Parameters
+  xy_goal_tolerance: 0.2  # A slightly larger tolerance
+  yaw_goal_tolerance: 6.28
+  # CRITICAL: This prevents the robot from stopping prematurely
+  latch_xy_goal_tolerance: true
+
+  # --- KEY CHANGES FOR CORRIDOR NAVIGATION ---
+
+  # Forward Simulation Parameters
+  sim_time: 0.8           # Reduced significantly. Makes the planner more reactive and less worried about distant walls.
+
+  # Trajectory Scoring Parameters
+  # These weights make the planner prioritize reaching the goal over perfectly following the path, giving it more freedom to maneuver.
+  occdist_scale: 0.0     # Be slightly less afraid of obstacles
+  pdist_scale: 0.6        # Care a bit less about staying on the exact global path
+  gdist_scale: 1.0        # Care a lot more about making progress towards the goal
+
+  dwa: true
 
   holonomic_robot: false
-  meter_scoring: true
-
-  controller_frequency: 20.0

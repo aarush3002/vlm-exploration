@@ -1,0 +1,61 @@
+<launch>
+    <!-- <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">
+      <remap from="map" to="/grid_map" />
+      <param name="base_local_planner" value="teb_local_planner/TebLocalPlannerROS" />
+
+      <rosparam file="$(find ros_x_habitat)/navigation_params/global_costmap.yaml" command="load" ns="global_costmap" />
+      <rosparam file="$(find ros_x_habitat)/navigation_params/local_costmap.yaml" command="load" ns="local_costmap" />
+      <rosparam file="$(find ros_x_habitat)/navigation_params/teb_local_planner_params.yaml" command="load" />
+    </node> -->
+
+    <!-- <node pkg="explore_lite" type="explore" respawn="false" name="explore_lite" output="screen">
+        <remap from="map" to="/grid_map" />
+    </node> -->
+
+    <node pkg="explore_lite" type="explore" respawn="false" name="explore" output="screen">
+        <env name="ROSCONSOLE_CONFIG_FILE" value="$(find ros_x_habitat)/config/rosconsole.conf"/>
+        <param name="robot_base_frame" value="base_frame"/>
+        <param name="costmap_topic" value="move_base/global_costmap/costmap"/>
+        <param name="costmap_updates_topic" value="move_base/global_costmap/costmap_updates"/>
+        <param name="visualize" value="true"/>
+        <param name="planner_frequency" value="0.05"/> <!--0.33-->
+        <param name="progress_timeout" value="60.0"/> <!--30-->
+        <param name="potential_scale" value="1.0e-4"/> 
+        <!-- <param name="potential_scale" value="3.0"/> -->
+        <param name="orientation_scale" value="0.0"/>
+        <param name="gain_scale" value="1.0"/>
+        <param name="transform_tolerance" value="0.3"/>
+        <param name="min_frontier_size" value="0.2"/> <!--0.25-->
+    </node>
+
+    <!--<node pkg="ros_x_habitat" type="distance_tracker.py" name="distance_tracker" output="screen"/>-->
+
+    <node pkg="ros_x_habitat" type="aarush_classical_exploration_tracker.py" name="exploration_tracker" output="screen">
+        <!-- Timeout in seconds to wait for a new goal before assuming exploration is complete.
+             Should be slightly longer than explore_lite's progress_timeout. -->
+        <param name="completion_timeout" value="70.0" /> <!--35-->
+        
+        <!-- The folder where the final summary map will be saved. -->
+        <param name="output_folder" value="/home/aarush/final_explore_lite_results/S9hNv5qa7GM/" />
+
+        <!-- The map topic the tracker should subscribe to. -->
+        <param name="map_topic" value="/grid_map" />
+    </node>
+
+    <!-- <node pkg="explore_lite" type="explore" respawn="false" name="explore_lite" output="screen">
+        <remap from="map" to="/grid_map" />
+
+        <rosparam>
+            robot_base_frame: "base_frame"
+            costmap_topic: "move_base/global_costmap/costmap"
+            costmap_updates_topic: "move_base/global_costmap/costmap_updates"
+            visualize: true
+            planner_frequency: 1.0
+            progress_timeout: 30.0
+            potential_scale: 1.0e-3
+            orientation_scale: 0.0
+            gain_scale: 1.0
+            min_frontier_size: 0.5
+        </rosparam>
+    </node> -->
+</launch>

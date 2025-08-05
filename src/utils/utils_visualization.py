@@ -743,3 +743,33 @@ def visualize_pairwise_percentage_diff_of_metrics(
                 f"{plot_dir}/{metric_name}-{config_names[1]}_vs_{config_names[0]}.png"
             )
         plt.close(fig)
+
+def create_clean_map_image(
+    clean_map_info: Dict[str, np.ndarray], output_height: Optional[int] = 500
+) -> np.ndarray:
+    """
+    Generates a colorized image from raw top-down map data and a fog mask,
+    fitting it to a specified height.
+    """
+    # Unpack the map data and the fog of war mask
+    top_down_map_raw = clean_map_info["map"]
+    fog_of_war_mask = clean_map_info.get("fog_of_war_mask")
+
+    # Let colorize_topdown_map handle the fog of war rendering correctly
+    colorized_map = maps.colorize_topdown_map(top_down_map_raw, fog_of_war_mask)
+
+    # Use the existing utility to resize the map for consistent output
+    if colorized_map.shape[0] > colorized_map.shape[1]:
+        colorized_map = np.rot90(colorized_map, 1)
+
+    old_h, old_w, _ = colorized_map.shape
+    top_down_height = output_height
+    top_down_width = int(float(top_down_height) / old_h * old_w)
+    
+    final_map_image = cv2.resize(
+        colorized_map,
+        (top_down_width, top_down_height),
+        interpolation=cv2.INTER_CUBIC,
+    )
+
+    return final_map_image

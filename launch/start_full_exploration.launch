@@ -1,0 +1,14 @@
+<launch>
+    <node pkg="ros_x_habitat" type="habitat_env_node_new.py" name="habitat_env" output="screen"
+          args="--task-config $(find ros_x_habitat)/configs/roam_configs/pointnav_rgbd_roam_mp3d_test_scenes.yaml
+                --enable-physics-sim
+                --use-continuous-agent
+                --sensor-pub-rate 20.0" />
+
+    <group ns="robot_1">
+        <include file="$(find ros_x_habitat)/launch/roam_no_joy.launch"/>
+        <include file="$(find ros_x_habitat)/launch/rtabmap_no_hector.launch"/>
+
+        <include file="$(find ros_x_habitat)/launch/rrt.launch"/>
+    </group>
+</launch>

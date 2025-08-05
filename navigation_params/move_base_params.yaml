@@ -1,0 +1,27 @@
+# Parameters for the move_base node itself
+# Defines how long to wait for a valid plan or control before entering recovery.
+controller_patience: 5.0
+planner_patience: 5.0
+controller_frequency: 10.0
+
+oscillation_timeout: 15.0  # Abort if no progress is made for 15 seconds
+oscillation_distance: 0.2
+
+# Enable the recovery behaviors
+recovery_behavior_enabled: true
+
+# Define a list of recovery behaviors to try in order
+recovery_behaviors:
+  - name: 'conservative_reset'
+    type: 'clear_costmap_recovery/ClearCostmapRecovery'
+  - name: 'aggressive_reset'
+    type: 'clear_costmap_recovery/ClearCostmapRecovery'
+
+# Configuration for the conservative_reset behavior
+conservative_reset:
+  reset_distance: 3.0 # Clears obstacles in a 3-meter radius around the robot
+
+# Configuration for the aggressive_reset behavior
+# This one will clear the entire costmap if the conservative one fails.
+aggressive_reset:
+  reset_distance: 0.0 # A value of 0.0 clears the entire map

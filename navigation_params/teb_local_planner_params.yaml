@@ -1,0 +1,50 @@
+TebLocalPlannerROS:
+  odom_topic: odom
+  map_frame: map
+
+  # Trajectory
+  teb_autosize: True
+  dt_ref: 0.3
+  dt_hysteresis: 0.1
+  global_plan_overwrite_orientation: True
+  max_global_plan_lookahead_dist: 1.5 #3.0
+  feasibility_check_no_poses: 5
+
+  # Robot
+  max_vel_x: 1.2
+  max_vel_x_backwards: 0.1 #0.15 # Allow moving backwards
+  max_vel_theta: 1.0
+  acc_lim_x: 2.5 #2.5 #0.5
+  acc_lim_theta: 2.5 #2.5 #0.5
+  holonomic_robot: true   # Set to true for differential drive/omnidirectional robots
+  footprint_model: # Defines the robot's shape
+    type: "circular"
+    # For a circular robot, just the radius is needed
+    radius: 0.1
+
+  # Goal Tolerance
+  xy_goal_tolerance: 0.1
+  yaw_goal_tolerance: 6.28 # Allow any orientation at the goal
+  free_goal_vel: False
+
+  # Obstacles
+  min_obstacle_dist: 0.15 # This is your safety buffer
+  include_costmap_obstacles: True
+  costmap_obstacles_behind_robot_dist: 1.0
+  obstacle_poses_affected: 30
+
+  # Optimization
+  no_inner_iterations: 5
+  no_outer_iterations: 4
+  optimization_activate: True
+  optimization_verbose: False
+  penalty_epsilon: 0.1
+  weight_max_vel_x: 2
+  weight_max_vel_theta: 1
+  weight_acc_lim_x: 1
+  weight_acc_lim_theta: 1
+  weight_kinematics_nh: 1000
+  weight_kinematics_forward_drive: 1000 #1
+  weight_kinematics_turning_radius: 1
+  weight_optimaltime: 1
+  weight_obstacle: 50

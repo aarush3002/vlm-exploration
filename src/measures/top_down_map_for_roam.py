@@ -54,6 +54,7 @@ class TopDownMapForRoam(Measure):
         self._previous_xy_location: Optional[Tuple[int, int]] = None
         self._top_down_map: Optional[np.ndarray] = None
         self._shortest_path_points: Optional[List[Tuple[int, int]]] = None
+        self._original_map: Optional[np.ndarray] = None
         self.line_thickness = int(
             np.round(self._map_resolution * 2 / MAP_THICKNESS_SCALAR)
         )
@@ -186,6 +187,9 @@ class TopDownMapForRoam(Measure):
         self._step_count = 0
         self._metric = None
         self._top_down_map = self.get_original_map()
+
+        self._original_map = self._top_down_map.copy()
+
         agent_position = self._sim.get_agent_state().position
         a_x, a_y = maps.to_grid(
             agent_position[2],
@@ -280,3 +284,25 @@ class TopDownMapForRoam(Measure):
                 max_line_len=self._config.FOG_OF_WAR.VISIBILITY_DIST
                 / maps.calculate_meters_per_pixel(self._map_resolution, sim=self._sim),
             )
+    
+    def get_clean_map(self):
+        r"""
+        Returns a version of the map with exploration fog but without any
+        path, start/end points, or agent icon.
+        """
+        # Start with the pristine version of the map (walls and background)
+        if self._original_map is None:
+            return None
+        
+        return {
+            "map": self._original_map,
+            "fog_of_war_mask": self._fog_of_war_mask,
+        }
+        
+        # clean_map = self._original_map.copy()
+        
+        # # Apply the fog of war mask to show explored areas
+        # if self._config.FOG_OF_WAR.DRAW and self._fog_of_war_mask is not None:
+        #     clean_map[self._fog_of_war_mask == 0] = 0 #maps.FOG_OF_WAR_MASK
+        
+        # return clean_map

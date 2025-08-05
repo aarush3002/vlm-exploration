@@ -1,0 +1,32 @@
+<launch>
+    <arg name="robot_base_frame" default="base_frame"/>
+    <arg name="world_frame" default="world"/>
+
+    <node name="octomap_server" pkg="octomap_server" type="octomap_server_node">
+        <param name="resolution" value="0.1"/>
+        <param name="frame_id" type="string" value="$(arg world_frame)"/>
+        <param name="base_frame_id" value="$(arg robot_base_frame)"/>
+        <param name="sensor_model/max_range" value="5.0"/>
+
+        <remap from="cloud_in" to="/rtabmap/cloud_map"/>
+
+        <remap from="octomap_binary" to="octomap_binary"/>
+        <remap from="octomap_full" to="octomap_full"/>
+    </node>
+
+    <node name="fkie_nbv_planner" pkg="fkie_nbv_planner" type="nbvplanner_node" output="screen">
+        <param name="world_frame" value="$(arg world_frame)" />
+
+        <rosparam command="load" file="$(find fkie_nbv_planner)/config/nbv_planner_freespace_fast.yaml" />
+
+        <remap from="octomap" to="octomap_full"/>
+
+        <remap from="/robot_bbx" to="/move_base/global_costmap/footprint"/>
+    </node>
+
+    <node name="robot_pose_publisher" pkg="fkie_nbv_planner" type="odom2Posestamped.py">
+        <remap from="odom" to="/odom"/>
+        <remap from="pose" to="/pose"/>
+    </node>
+
+</launch>

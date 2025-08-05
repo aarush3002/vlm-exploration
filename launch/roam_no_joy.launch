@@ -1,5 +1,7 @@
 <?xml version="1.0"?>
 <launch>
+  <param name="/use_sim_time" value="false"/>
+
   <node pkg="image_view" type="image_view" name="image_view_rgb">
     <remap from="image" to="rgb"/>
   </node>
@@ -12,16 +14,25 @@
     <remap from="image" to="depth"/>
     <!--<remap from="scan"  to="scan_raw"/>-->      <!-- NEW -->
     <param name="output_frame_id" value="laser"/> <!--laser-->
+    <remap from="scan"  to="scan"/> <!--scan_raw-->
     <param name="scan_time" value="0.025"/> <!--0.025-->
     <param name="output_unit" value="METERS"/>
-    <param name="range_max"   value="5"/>
-    <param name="range_min" value="0.2" />
-    <param name="scan_height" value="20"/>
+    <param name="range_max"   value="3.5"/> <!--5-->
+    <param name="range_min" value="0.05" />
+    <param name="scan_height" value="40"/>
   </node>
 
   <node pkg="tf" type="static_transform_publisher"
       name="base_to_laser"
       args="0 0 0 0 0 0 base_frame  laser 100"/>
+
+  <!-- <node pkg="laser_filters" type="scan_to_scan_filter_chain"
+        name="scan_filter" output="screen">
+    <rosparam command="load"
+              file="$(find ros_x_habitat)/config/scan_filters.yaml"/>
+    <remap from="scan"          to="scan_raw"/>
+    <remap from="scan_filtered" to="scan"/>
+  </node> -->
   <!-- ───── filter chain: /scan_raw → /scan (filtered) ─────────────────── -->
   <!-- <node pkg="laser_filters" type="scan_to_scan_filter_chain"
         name="scan_filter" output="screen">

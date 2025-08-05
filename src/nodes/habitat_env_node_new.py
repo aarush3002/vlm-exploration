@@ -22,7 +22,7 @@ from src.envs.habitat_eval_rlenv import HabitatEvalRLEnv
 from src.evaluators.habitat_sim_evaluator import HabitatSimEvaluator
 import time
 from src.utils import utils_logging
-from src.utils.utils_visualization import generate_video, observations_to_image_for_roam
+from src.utils.utils_visualization import generate_video, observations_to_image_for_roam, create_clean_map_image
 from src.measures.top_down_map_for_roam import (
     TopDownMapForRoam,
     add_top_down_map_for_roam_to_config,
@@ -44,6 +44,9 @@ from tf.transformations import (
 
 import math
 from sensor_msgs.msg import Imu 
+
+import os
+import cv2
 
 class HabitatEnvNode:
     r"""
@@ -490,6 +493,124 @@ class HabitatEnvNode:
         return observations_ros
     
 
+    # def _publish_gt_odom(self):
+    #     st = self.env._env._sim.get_agent_state()
+
+    #     # Debug prints (keep these, they are useful!)
+    #     print("Habitat Position", st.position)
+    #     print("Habitat rotation (x,y,z,w)", st.rotation.x, st.rotation.y, st.rotation.z, st.rotation.w)
+    #     print("Habitat velocity", st.velocity)
+    #     print("Habitat angular velocity", st.angular_velocity)
+
+    #     # --------------------------- Odometry msg ---------------------------
+    #     odom = Odometry()
+    #     odom.header.stamp = rospy.Time.now()
+    #     odom.header.frame_id = "odom"       # Odometry frame (fixed world frame)
+    #     odom.child_frame_id = "base_frame"  # Robot's base frame
+
+    #     # Publish the /clock message using the same timestamp as odom/tf
+    #     clock_msg = Clock()
+    #     clock_msg.clock = odom.header.stamp # Use the same timestamp
+    #     self.clock_pub.publish(clock_msg)
+
+    #     # --- Position Transformation: Habitat (X_h, Y_h, Z_h) to ROS (X_r, Y_r, Z_r)
+    #     # Habitat: X_h=forward, Y_h=up, Z_h=right
+    #     # ROS:     X_r=forward, Y_r=left, Z_r=up
+
+    #     # X_r = X_h (forward is forward)
+    #     # Y_r = -Z_h (right in Habitat is left in ROS)
+    #     # Z_r = Y_h (up in Habitat is up in ROS)
+    #     odom.pose.pose.position.x = st.position[0]
+    #     odom.pose.pose.position.y = -st.position[2]
+    #     odom.pose.pose.position.z = st.position[1]  # Z usually 0 if robot on flat ground
+
+    #     # --- Orientation Transformation: Habitat (q_h) to ROS (q_ros)
+    #     # The transformation from Habitat's coordinate system to ROS REP-103:
+    #     # This basis transform maps Habitat's X, Y, Z to ROS's X, Z, -Y before rotation.
+    #     # A rotation of -90 degrees around X followed by +90 degrees around Z should map:
+    #     # Habitat X -> ROS X
+    #     # Habitat Y (up) -> ROS Z (up)
+    #     # Habitat Z (right) -> ROS Y (left)
+    #     # This quaternion is static and represents the difference in coordinate conventions.
+    #     q_hab_to_ros_basis = quaternion_from_euler(math.radians(-90), 0.0, math.radians(90), axes='sxyz')
+        
+    #     # Agent's rotation in Habitat's frame
+    #     q_h = [st.rotation.x, st.rotation.y, st.rotation.z, st.rotation.w]
+
+    #     # Combine the basis transformation with the agent's rotation.
+    #     # This order is correct: first apply the fixed basis transformation, then the agent's rotation within that new basis.
+    #     q_ros = quaternion_multiply(q_hab_to_ros_basis, q_h)
+
+    #     # --- Flatten roll & pitch so odom is purely 2D (recommended for 2D nav)
+    #     # This assumes the robot always stays on a flat plane.
+    #     roll, pitch, yaw = euler_from_quaternion(q_ros, axes="sxyz")
+        
+    #     # --- RE-INTRODUCE YAW DIRECTION REVERSAL FIX ---
+    #     yaw_corrected = -yaw # Negate the yaw angle
+
+    #     q_flat = quaternion_from_euler(0.0, 0.0, yaw_corrected, axes="sxyz") # Keep only the corrected yaw
+        
+    #     odom.pose.pose.orientation.x = q_flat[0]
+    #     odom.pose.pose.orientation.y = q_flat[1]
+    #     odom.pose.pose.orientation.z = q_flat[2]
+    #     odom.pose.pose.orientation.w = q_flat[3]
+
+    #     # --- Linear Velocity Transformation
+    #     R_hab_to_ros_basis = quaternion_matrix(q_hab_to_ros_basis)[:3,:3]
+    #     v_h = np.array([st.velocity[0], st.velocity[1], st.velocity[2]]) # Habitat velocity as numpy array
+
+    #     # Apply the same rotation to the velocity vector
+    #     v_ros = R_hab_to_ros_basis @ v_h
+
+    #     odom.twist.twist.linear.x = v_ros[0]
+    #     odom.twist.twist.linear.y = v_ros[1]
+    #     odom.twist.twist.linear.z = v_ros[2]
+
+    #     # --- Angular Velocity Transformation
+    #     w_h = np.array([st.angular_velocity[0], st.angular_velocity[1], st.angular_velocity[2]])
+
+    #     # Apply the same rotation to the angular velocity vector
+    #     w_ros = R_hab_to_ros_basis @ w_h
+
+    #     odom.twist.twist.angular.x = 0.0
+    #     odom.twist.twist.angular.y = 0.0
+    #     # --- RE-INTRODUCE YAW DIRECTION REVERSAL FIX FOR ANGULAR VELOCITY ---
+    #     odom.twist.twist.angular.z = -w_ros[2] # Negate angular Z velocity to match yaw correction
+
+    #     self.pub_odom.publish(odom)
+
+    #     # --------------------------- TF  odom → base_frame ------------------
+    #     # This TF broadcast takes the pose directly from the published Odometry message.
+    #     tf = geometry_msgs.msg.TransformStamped()
+    #     tf.header = odom.header          # Uses the same timestamp and frame_id="odom"
+    #     tf.child_frame_id = "base_frame" # The child is the robot's base
+    #     tf.transform.translation.x = odom.pose.pose.position.x
+    #     tf.transform.translation.y = odom.pose.pose.position.y
+    #     tf.transform.translation.z = odom.pose.pose.position.z
+    #     tf.transform.rotation = odom.pose.pose.orientation # Use the flattened, corrected orientation
+    #     self.tf_br.sendTransform(tf)
+
+    #     # --------------------------------------------------------------------
+    #     # IMU message (orientation + angular velocity copy from Odometry)
+    #     # The IMU data should typically be in the sensor's own frame, but for a
+    #     # simple robot, it often mirrors the base_frame's angular velocity.
+    #     imu = Imu()
+    #     imu.header = odom.header            # same stamp + frame (odom)
+    #     imu.orientation = odom.pose.pose.orientation # This is the flattened, ROS-aligned, and yaw-corrected orientation
+    #     imu.angular_velocity = odom.twist.twist.angular # This is the 2D, yaw-corrected angular velocity
+
+    #     # Mark linear acceleration “unknown” if not provided by Habitat
+    #     imu.linear_acceleration.x = imu.linear_acceleration.y = imu.linear_acceleration.z = 0.0
+    #     imu.linear_acceleration_covariance[0] = -1.0 # Standard way to mark covariance as unknown/unsupported
+
+    #     # simple small covariances – tune if desired
+    #     # These are placeholder values. For real systems, they come from sensor specs.
+    #     for i in (0, 4, 8):
+    #         imu.orientation_covariance[i] = 1e-3
+    #         imu.angular_velocity_covariance[i] = 1e-3
+
+    #     self.pub_imu.publish(imu)
+
     def _publish_gt_odom(self):
         st = self.env._env._sim.get_agent_state()
 
@@ -517,8 +638,8 @@ class HabitatEnvNode:
         # X_r = X_h (forward is forward)
         # Y_r = -Z_h (right in Habitat is left in ROS)
         # Z_r = Y_h (up in Habitat is up in ROS)
-        odom.pose.pose.position.x = st.position[0]
-        odom.pose.pose.position.y = -st.position[2]
+        odom.pose.pose.position.x = -st.position[0]
+        odom.pose.pose.position.y = st.position[2]
         odom.pose.pose.position.z = st.position[1]  # Z usually 0 if robot on flat ground
 
         # --- Orientation Transformation: Habitat (q_h) to ROS (q_ros)
@@ -840,11 +961,136 @@ class HabitatEnvNode:
                     self.enable_eval = False
                     self.enable_eval_cv.notify()
 
+    def analyze_map_coverage(self, image_path):
+        """
+        Loads a clean exploration map and calculates the percentage of explored space
+        using predefined, exact color values.
+
+        Args:
+            image_path (str): The path to the input map image file.
+        """
+        # --- 1. Load the Image ---
+        if not os.path.exists(image_path):
+            print(f"Error: Image file not found at '{image_path}'")
+            return
+
+        map_image = cv2.imread(image_path)
+        if map_image is None:
+            print(f"Error: Could not read the image file. It may be corrupted or in an unsupported format.")
+            return
+
+        # --- 2. Define Exact Color Values (in BGR format) ---
+        # IMPORTANT: Replace these with the exact BGR values you have identified.
+        # BGR is (Blue, Green, Red).
+        # For example, if your seen color is RGB(128, 128, 128), the BGR value is (128, 128, 128).
+        # If your unseen color is RGB(105, 105, 105), the BGR value is (105, 105, 105).
+        SEEN_COLOR_BGR = np.array([150, 150, 150])  # CHANGE THIS - The light gray color for explored areas
+        UNSEEN_COLOR_BGR = np.array([75, 75, 75]) # CHANGE THIS - The dark gray color for unexplored areas
+
+        # --- 3. Create Masks and Count Pixels ---
+        # Create a mask for each color. This will be True where the pixel color matches exactly.
+        mask_seen = np.all(map_image == SEEN_COLOR_BGR, axis=-1)
+        mask_unseen = np.all(map_image == UNSEEN_COLOR_BGR, axis=-1)
+
+        # Count the number of True values in each mask
+        seen_pixels = np.count_nonzero(mask_seen)
+        unseen_pixels = np.count_nonzero(mask_unseen)
+
+        print("--- Pixel Counts ---")
+        print(f"Seen (Color: {SEEN_COLOR_BGR}):      {seen_pixels} pixels")
+        print(f"Unseen (Color: {UNSEEN_COLOR_BGR}):    {unseen_pixels} pixels")
+        print("-" * 22)
+
+        # --- 4. Calculate Exploration Percentage ---
+        total_explorable_pixels = seen_pixels + unseen_pixels
+
+        if total_explorable_pixels == 0:
+            print("Could not find any explorable (seen or unseen) pixels.")
+            print("Please verify the BGR color values in the script.")
+            exploration_percentage = 0.0
+        else:
+            exploration_percentage = (seen_pixels / total_explorable_pixels) * 100
+
+        print("\n--- Coverage Calculation ---")
+        print(f"Formula: (Seen Pixels) / (Seen Pixels + Unseen Pixels)")
+        print(f"Calculation: {seen_pixels} / ({seen_pixels} + {unseen_pixels})")
+        print(f"Exploration Percentage: {exploration_percentage:.2f}%")
+
+        return exploration_percentage
+
     def on_exit_generate_video(self):
         r"""
-        Make video of the current episode, if video production is turned
-        on.
+        Make video of the current episode and calculate exploration percentage.
         """
+
+        experiment_name = "PX4nDJXEHrG"
+        home_dir = f"/home/aarush/final_gemini_results/{experiment_name}"
+        #home_dir = f"/home/aarush/final_explore_lite_results/{experiment_name}"
+        #home_dir = f"/home/aarush/final_rrt_results/{experiment_name}"
+        #home_dir = f"/home/aarush/final_opencv_results/{experiment_name}"
+
+        rospy.loginfo("Saving final exploration map image...")
+        try:
+            # Check if any frames were generated
+            if self.observations_per_episode:
+                # The last frame in the list is the final view
+                final_frame = self.observations_per_episode[-1]
+                
+                # Define a path in the user's home directory
+                filename = f"final_exploration_map_{int(time.time())}.png"
+                file_path = os.path.join(home_dir, filename)
+                
+                # Save the image using OpenCV
+                # The images are in RGB format, so we convert to BGR for cv2.imwrite
+                cv2.imwrite(file_path, cv2.cvtColor(final_frame, cv2.COLOR_RGB2BGR))
+                rospy.loginfo(f"Final map image saved to {file_path}")
+            else:
+                rospy.logwarn("No frames were recorded, cannot save final map image.")
+        except Exception as e:
+            rospy.logerr(f"An error occurred while saving the final map image: {e}")
+        # --- END OF NEW CODE ---
+
+
+        # --- START OF NEW ADDITIVE CODE ---
+        rospy.loginfo("Saving clean final exploration map...")
+        try:
+            # Access the top down map measure from the environment's task
+            top_down_map_measure = self.env._env._task.measurements.measures.get(
+                "top_down_map_for_roam"
+            )
+            
+            if top_down_map_measure and hasattr(top_down_map_measure, 'get_clean_map'):
+                # Get the raw, clean map data using the new method
+                clean_map_data = top_down_map_measure.get_clean_map()
+                
+                if clean_map_data is not None:
+                    # Generate the colorized image using the new utility function
+                    clean_map_image = create_clean_map_image(clean_map_data)
+                    
+                    # Define a new path for the clean map
+                    filename = f"final_clean_exploration_map_{int(time.time())}.png"
+                    file_path = os.path.join(home_dir, filename)
+                    
+                    # Save the clean image
+                    cv2.imwrite(file_path, cv2.cvtColor(clean_map_image, cv2.COLOR_RGB2BGR))
+                    rospy.loginfo(f"Clean map image saved to {file_path}")
+
+                    exploration_percentage = self.analyze_map_coverage(file_path)
+
+                    percent_filename = "total_seen_percent.txt"
+                    percent_filepath = os.path.join(home_dir, percent_filename)
+                    with open(percent_filepath, "w") as f:
+                        f.write(f"{exploration_percentage:.2f}\n")
+                    rospy.loginfo(f"Exploration percentage saved to {percent_filepath}")
+            else:
+                rospy.logwarn(
+                    "Could not find 'top_down_map_for_roam' measure or 'get_clean_map' method."
+                )
+
+        except Exception as e:
+            rospy.logerr(f"An error occurred while saving the clean map image: {e}")
+        # --- END OF NEW ADDITIVE CODE ---
+
         if self.make_video:
             generate_video(
                 video_option=self.config.VIDEO_OPTION,
@@ -857,6 +1103,24 @@ class HabitatEnvNode:
                 metrics={},
                 tb_writer=None,
             )
+
+    # def on_exit_generate_video(self):
+    #     r"""
+    #     Make video of the current episode, if video production is turned
+    #     on.
+    #     """
+    #     if self.make_video:
+    #         generate_video(
+    #             video_option=self.config.VIDEO_OPTION,
+    #             video_dir=self.config.VIDEO_DIR,
+    #             images=self.observations_per_episode,
+    #             episode_id="fake_episode_id",
+    #             scene_id="fake_scene_id",
+    #             agent_seed=0,
+    #             checkpoint_idx=0,
+    #             metrics={},
+    #             tb_writer=None,
+    #         )
 
 
 def main():

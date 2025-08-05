@@ -15,6 +15,6 @@ rospy.Subscriber("cmd_vel", Twist, relay, queue_size=10)
 rate = rospy.Rate(40)     # 4 Hz watchdog
 zero = Twist()
 while not rospy.is_shutdown():
-    if (rospy.Time.now() - last_cmd_time).to_sec() > 1/30:
+    if (rospy.Time.now() - last_cmd_time).to_sec() > 1/4:
         pub.publish(zero)                      # only if silent >0.4 s
     rate.sleep()

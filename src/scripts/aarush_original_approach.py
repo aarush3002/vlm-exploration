@@ -457,10 +457,10 @@ def get_frontier_midpoint(contour, robot):
     wx, wy = robot.p2w(cx, cy)
     return (wx, wy)
 
-def find_and_filter_frontiers(robot, max_frontiers=5, max_radius_m=10.0):
+def find_and_filter_frontiers(robot, frontier_blacklist, max_frontiers=5, max_radius_m=3.0):
     """
-    Finds all frontiers, filters them by distance from the robot, and
-    returns the largest ones.
+    Finds all frontiers, filters by distance and blacklist, and returns the
+    closest N frontiers.
     """
     if robot.map_arr is None:
         rospy.logwarn("Map not available for frontier detection.")
@@ -472,24 +472,64 @@ def find_and_filter_frontiers(robot, max_frontiers=5, max_radius_m=10.0):
     if not all_frontiers:
         return []
 
-    # 2. Calculate midpoint, distance, and size for each frontier
+    # 2. Calculate midpoint and distance for each frontier
     robot_pos, _ = robot.pose
-    frontiers_with_size = []
+    frontiers_with_dist = []
     for contour in all_frontiers:
         midpoint_world = get_frontier_midpoint(contour, robot)
         if midpoint_world:
-            # First, filter out frontiers that are too far away
             dist = euclidean_dist(robot_pos['x'], robot_pos['y'], midpoint_world[0], midpoint_world[1])
             if dist <= max_radius_m:
-                # NEW: Calculate the size (length in pixels) of the frontier
-                size = len(contour)
-                frontiers_with_size.append((size, midpoint_world, contour))
+                # Store distance as the primary element for sorting
+                frontiers_with_dist.append((dist, midpoint_world, contour))
 
-    # 3. Sort frontiers by size (largest first)
-    frontiers_with_size.sort(key=lambda x: x[0], reverse=True)
+    # 3. Sort frontiers by distance (closest first)
+    frontiers_with_dist.sort(key=lambda x: x[0])
+    
+    # 4. Filter out blacklisted frontiers
+    unblacklisted_frontiers = []
+    for frontier_data in frontiers_with_dist:
+        midpoint = frontier_data[1]  # The (wx, wy) tuple
+        if round_midpoint(midpoint) not in frontier_blacklist:
+            unblacklisted_frontiers.append(frontier_data)
+    
+    if len(unblacklisted_frontiers) < len(frontiers_with_dist):
+        rospy.loginfo(f"Ignoring {len(frontiers_with_dist) - len(unblacklisted_frontiers)} blacklisted frontiers.")
 
-    # 4. Return the top N largest frontiers
-    return frontiers_with_size[:max_frontiers]
+    # 5. Return the top N closest, unblacklisted frontiers
+    return unblacklisted_frontiers[:max_frontiers]
+
+def get_frontier_orientation(contour, midpoint_world, robot):
+    """
+    Calculates a goal orientation that is perpendicular to the frontier line,
+    pointing into unknown space.
+    """
+    # Use cv2.fitLine to find the principal axis of the frontier points
+    # This gives us a normalized vector (vx, vy) representing the line's direction
+    [vx, vy, x, y] = cv2.fitLine(contour, cv2.DIST_L2, 0, 0.01, 0.01)
+
+    # The angle of the frontier line itself
+    frontier_angle = math.atan2(vy, vx)
+
+    # The two possible perpendicular angles (90 degrees offset)
+    perp_angle_1 = frontier_angle + math.pi / 2.0
+    perp_angle_2 = frontier_angle - math.pi / 2.0
+
+    # We need to figure out which perpendicular angle points into unknown space.
+    # We do this by checking a test point slightly away from the midpoint.
+    test_dist = 0.2 # 20 cm
+
+    # Test point for the first perpendicular angle
+    test_x1 = midpoint_world[0] + test_dist * math.cos(perp_angle_1)
+    test_y1 = midpoint_world[1] + test_dist * math.sin(perp_angle_1)
+
+    # Check if this test point is in "unknown" space on the raw map
+    if not is_goal_in_occupancy_grid(test_x1, test_y1, robot):
+        # This direction points towards unknown or occupied, so it's the correct one
+        return perp_angle_1
+    else:
+        # Otherwise, the other perpendicular direction must be correct
+        return perp_angle_2
 
 def is_goal_in_open_space(goal_x, goal_y, robot_obj, radius=0.2):
     """
@@ -535,6 +575,36 @@ def is_goal_in_open_space(goal_x, goal_y, robot_obj, radius=0.2):
     # If we checked all pixels in the circle and all were free, the goal is valid
     return True
 
+def is_goal_in_occupancy_grid(goal_x, goal_y, robot_obj):
+    """
+    Checks if a goal coordinate is within the SLAM map bounds and in free space.
+    """
+    if robot_obj.map_msg is None:
+        rospy.logwarn("Occupancy grid not available yet for goal checking.")
+        return False
+
+    # Get occupancy grid properties from the robot object
+    origin_x = robot_obj.map_msg.info.origin.position.x
+    origin_y = robot_obj.map_msg.info.origin.position.y
+    resolution = robot_obj.map_msg.info.resolution
+    width = robot_obj.map_msg.info.width
+    height = robot_obj.map_msg.info.height
+
+    # Convert world coordinates to map coordinates
+    map_x = int((goal_x - origin_x) / resolution)
+    map_y = int((goal_y - origin_y) / resolution)
+
+    # Check if the goal is within the map boundaries
+    if map_x < 0 or map_x >= width or map_y < 0 or map_y >= height:
+        return False
+
+    # Check the value of the goal cell
+    # OccupancyGrid values: -1=unknown, 0=free, 1-100=occupied
+    value = robot_obj.map_arr[map_y, map_x]
+
+    # A valid point must be in a known "free" cell
+    return value == 0
+
 def find_best_intermediate_goal(start_x, start_y, goal_x, goal_y, robot_obj):
     """
     Traces a line from an out-of-bounds goal back towards the robot to find
@@ -564,74 +634,79 @@ def find_best_intermediate_goal(start_x, start_y, goal_x, goal_y, robot_obj):
     rospy.logwarn("Could not find any valid intermediate goal on the path.")
     return None
 
-def navigate_with_move_base(client, robot_obj, original_goal_x, original_goal_y, original_goal_yaw_rad, timeout_seconds=150.0):
+def navigate_with_move_base(client, robot_obj, goal_x, goal_y, goal_yaw_rad,
+                            total_timeout_s=120.0,
+                            stuck_time_s=60.0,
+                            stuck_dist_m=0.1):
     """
-    Iteratively navigates towards a goal. If the goal is off-map, it finds the
-    best possible intermediate goal on the edge of the known map.
+    Sends a goal to move_base and actively monitors for progress. If the robot
+    does not move a minimum distance in a set amount of time, it cancels the goal.
     """
-    target_x, target_y = original_goal_x, original_goal_y
-    
+    goal = MoveBaseGoal()
+    goal.target_pose.header.frame_id = "map"
+    goal.target_pose.header.stamp = rospy.Time.now()
+    goal.target_pose.pose.position.x = goal_x
+    goal.target_pose.pose.position.y = goal_y
+    q = quaternion_from_euler(0, 0, goal_yaw_rad)
+    goal.target_pose.pose.orientation.x = q[0]
+    goal.target_pose.pose.orientation.y = q[1]
+    goal.target_pose.pose.orientation.z = q[2]
+    goal.target_pose.pose.orientation.w = q[3]
+
+    rospy.loginfo(f"Sending goal to move_base: ({goal_x:.2f}, {goal_y:.2f})")
+    client.send_goal(goal)
+
+    # --- NEW PROGRESS MONITORING LOGIC ---
+    start_time = rospy.Time.now()
+    last_check_time = rospy.Time.now()
+    last_check_pos, _ = robot_obj.pose
+
+    rate = rospy.Rate(2) # Check roughly twice per second
     while not rospy.is_shutdown():
-        current_pos, _ = robot_obj.pose
-        current_x, current_y = current_pos['x'], current_pos['y']
+    #while not rospy.is_shutdown() and (rospy.Time.now() - start_time).to_sec() < total_timeout_s:
+        # Check if the goal has already completed
+        goal_status = client.get_state()
+        if goal_status in [actionlib.GoalStatus.SUCCEEDED, actionlib.GoalStatus.ABORTED,
+                           actionlib.GoalStatus.REJECTED, actionlib.GoalStatus.PREEMPTED]:
+            break
 
-        if is_at_goal(current_x, current_y, original_goal_x, original_goal_y):
-            rospy.loginfo("Successfully arrived at the final goal.")
-            return True
-
-        # Check if the current target is valid
-        if not is_goal_in_open_space(target_x, target_y, robot_obj):
-            # If the goal is invalid, find the best intermediate point
-            intermediate_goal = find_best_intermediate_goal(current_x, current_y, original_goal_x, original_goal_y, robot_obj)
+        # Check if enough time has passed to check for progress
+        if (rospy.Time.now() - last_check_time).to_sec() > stuck_time_s:
+            current_pos, _ = robot_obj.pose
+            distance_moved = euclidean_dist(current_pos['x'], current_pos['y'],
+                                            last_check_pos['x'], last_check_pos['y'])
             
-            if intermediate_goal is None:
-                rospy.logerr("Aborting navigation: No valid intermediate path could be found.")
-                return False
+            # If the robot hasn't moved enough, consider it stuck
+            if distance_moved < stuck_dist_m:
+                rospy.logwarn(f"Robot has not moved >{stuck_dist_m}m in {stuck_time_s}s. Canceling goal.")
+                client.cancel_goal()
+                robot_obj.publish_empty_twist()
+                return False # Return failure
             
-            # Set the new target to the best intermediate point
-            target_x, target_y = intermediate_goal
-        else:
-            # If the original goal is now on the map, target it directly
-            if is_goal_in_open_space(original_goal_x, original_goal_y, robot_obj):
-                target_x, target_y = original_goal_x, original_goal_y
-            else:
-                rospy.loginfo("Original goal is not navigable, exiting local navigation.")
-                return True
+            # If it has moved, reset the progress checker
+            last_check_time = rospy.Time.now()
+            last_check_pos = current_pos
 
-        direction_x = target_x - current_x
-        direction_y = target_y - current_y
-        magnitude = math.sqrt(direction_x**2 + direction_y**2)
-        timeout_seconds = max(20 * magnitude, 150)
+        rate.sleep()
+    # --- END OF NEW LOGIC ---
 
-        # --- Send the calculated target to move_base ---
-        goal = MoveBaseGoal()
-        goal.target_pose.header.frame_id = "map"
-        goal.target_pose.header.stamp = rospy.Time.now()
-        goal.target_pose.pose.position.x = target_x
-        goal.target_pose.pose.position.y = target_y
-        q = quaternion_from_euler(0, 0, original_goal_yaw_rad)
-        goal.target_pose.pose.orientation.x = q[0]
-        goal.target_pose.pose.orientation.y = q[1]
-        goal.target_pose.pose.orientation.z = q[2]
-        goal.target_pose.pose.orientation.w = q[3]
+    final_status = client.get_state()
+    if final_status == actionlib.GoalStatus.SUCCEEDED:
+        rospy.loginfo("Goal reached successfully.")
+        return True
+    else:
+        # Handle cases where the goal failed within the timeout, or the main timeout was reached
+        if (rospy.Time.now() - start_time).to_sec() >= total_timeout_s:
+             rospy.logwarn(f"Total navigation timeout of {total_timeout_s}s reached. Canceling goal.")
+             client.cancel_goal()
+             robot.publish_empty_twist()
 
-        rospy.loginfo(f"Sending goal to move_base: ({target_x:.2f}, {target_y:.2f})")
-        client.send_goal(goal)
-        
-        finished_in_time = client.wait_for_result(rospy.Duration.from_sec(timeout_seconds))
+        rospy.logwarn(f"Failed to reach goal. Final status code: {final_status}")
+        return False
 
-        if not finished_in_time:
-            client.cancel_goal()
-            rospy.logwarn(f"Timed out trying to reach target. Aborting navigation.")
-            robot_obj.publish_empty_twist()
-            return False
-        else:
-            result_status = client.get_state()
-            if result_status != actionlib.GoalStatus.SUCCEEDED:
-                rospy.logwarn(f"Failed to reach target. Status: {result_status}. Aborting navigation.")
-                return False
-        
-        rospy.loginfo("Reached intermediate target. Re-evaluating path to final goal.")
+def round_midpoint(midpoint_tuple):
+    """Rounds the x and y coordinates of a midpoint to one decimal place."""
+    return (round(midpoint_tuple[0], 1), round(midpoint_tuple[1], 1))
 
 # ---------------------------------------------------------------------------
 # Main control loop
@@ -642,6 +717,7 @@ def main():
     start_time = time.time()
     graph = Graph()
     decision_point_stack = []
+    frontier_blacklist = set()
     prev_vertex          = None
     traversal_vertex     = None
 
@@ -670,320 +746,165 @@ def main():
 
         print(f"Pos: {starting_position} | Yaw: {starting_yaw:.1f}°")
 
+        closest_frontiers = find_and_filter_frontiers(robot, frontier_blacklist, max_frontiers=5, max_radius_m=3.0)
+
         occ_map_path = robot.overlay_graph_on_occupancy_map(
             graph, (starting_vertex.x, starting_vertex.y), starting_yaw,
+            closest_frontiers,
             out_folder="aarush_map_graphs",
             out_filename=f"map_graph_-1.png")
 
         # 2. 360° sweep ------------------------------------------------------
-        images_dir     = f"aarush_VLM_{counter}_color"
-        os.makedirs(images_dir, exist_ok=True)
+        # images_dir     = f"aarush_VLM_{counter}_color"
+        # os.makedirs(images_dir, exist_ok=True)
         multi = 360 // picture_interval
 
-        starting_map = {}
-        angles       = []
+        # starting_map = {}
+        # angles       = []
 
         for i in range(multi):
             pos_dict, raw_yaw = robot.pose
             print(f"Pos: {pos_dict} | Yaw: {raw_yaw:.1f}°")
-            rgb, _   = robot.capture_rgbd()
-            img_path = save_rgb(rgb, images_dir, i)
+            # rgb, _   = robot.capture_rgbd()
+            # img_path = save_rgb(rgb, images_dir, i)
 
-            heading  = (raw_yaw + 360) % 360
-            angles.append(heading)
-            starting_map[i] = [img_path, heading]
+            # heading  = (raw_yaw + 360) % 360
+            # angles.append(heading)
+            # starting_map[i] = [img_path, heading]
 
             robot.rotate_deg(-picture_interval)
 
+        closest_frontiers = find_and_filter_frontiers(robot, frontier_blacklist, max_frontiers=5, max_radius_m=3.0)
+        #print(closest_frontiers)
+
+        if not closest_frontiers:
+            rospy.logwarn("No valid frontiers found. Attempting to backtrack.")
+            # (Your backtracking logic would go here, using the decision_point_stack)
+            if len(decision_point_stack) > 0:
+                traversal_vertex = decision_point_stack.pop()
+                shortest_path = graph.dijkstra(starting_vertex, traversal_vertex)
+                curr_pose, curr_yaw = robot.pose
+                # navigate_to_last_dp(shortest_path, curr_pose["x"], curr_pose["y"], curr_yaw)
+                occ_map_path = robot.overlay_graph_on_occupancy_map(
+                    graph, (starting_vertex.x, starting_vertex.y), starting_yaw,
+                    closest_frontiers,
+                    out_folder=f"aarush_gemini_run_{counter}",
+                    out_filename=f"map_graph_{counter}.png")
+                navigate_to_last_dp(move_base_client, shortest_path)
+                robot.save_raw_map(out_folder="map_graphs", out_filename=f"map_graphs_{counter}.png")
+                counter +=1
+                continue
+            else:
+                #Searching over 60m radius for any loose frontiers
+                closest_frontiers = find_and_filter_frontiers(robot, frontier_blacklist, max_frontiers=5, max_radius_m=60.0)
+                if not closest_frontiers:
+                    rospy.loginfo("No backtrack path. Exploration complete.")
+                    break
+
+        if len(closest_frontiers) > 1:
+            # (Your decision point stack logic would be added here)
+            decision_point_stack.append(starting_vertex)
+            rospy.loginfo(f"Decision point found with {len(closest_frontiers)} options.")
+
+
+        images_dir = f"aarush_gemini_run_{counter}"
         # 3. Save overlay map ------------------------------------------------
         occ_map_path = robot.overlay_graph_on_occupancy_map(
             graph, (starting_vertex.x, starting_vertex.y), starting_yaw,
-            out_folder="aarush_map_graphs",
-            out_filename=f"map_graph_{counter}.png")
+            closest_frontiers, # <-- ADD THIS ARGUMENT
+            out_folder=images_dir, out_filename=f"map_graph_{counter}.png"
+        )
+
+        os.makedirs(images_dir, exist_ok=True)
+        frontier_views = {}
+        rospy.loginfo(f"Capturing images of {len(closest_frontiers)} frontiers...")
+
+        for i, (dist, midpoint, contour) in enumerate(closest_frontiers):
+            # Calculate angle to the frontier's midpoint
+            curr_position, curr_yaw = robot.pose
+
+            dx = midpoint[0] - curr_position['x']
+            dy = midpoint[1] - curr_position['y']
+
+            target_yaw_rad = math.atan2(dy, dx)
+            target_yaw_deg = (math.degrees(target_yaw_rad) + 360) % 360
+            
+            # Rotate to face the frontier
+            robot.rotate_deg(target_yaw_deg - curr_yaw)
+            time.sleep(1.0) # Pause to ensure robot is stable
+
+            # Capture and save the image
+            rgb, _ = robot.capture_rgbd()
+            img_path = save_rgb(rgb, images_dir, f"frontier_{i}")
+            
+            frontier_views[i] = {
+                "path": img_path,
+                "heading": target_yaw_deg,
+                "midpoint": midpoint,
+                "distance": dist
+            }
+
 
         # 4. Gemini: choose best direction ----------------------------------
-        if counter == 0:
-            first_prompt = f"""
-            You are a hexapod robot. Your main goal is to explore
-            new, accessible areas in an unknown environment as quickly as possible. You are given {len(angles)} images of your surroundings, and 
-            your task is to select one of the images to walk towards in order to achieve your main goal. You are additionally given
-            a 2D, top-down occupancy map of your surroundings, where black pixels represent occupied space (i.e. you cannot traverse through black
-            pixels on the occupancy map), white pixels represent free
-            space, and gray pixels represent unknown space. There is also a scale in meters (red). Aim to explore frontiers (boundaries between
-            white and gray pixels on the occupancy map), which are highlighted in yellow on the map.
-
-            Your answer should be a comma-separated ranking (no spaces, with nothing else) from best to worst of the images based on which images 
-            would be best to travel towards in order to achieve your main goal.
-
-            On the next line after your comma-separated rankings, if you believe that there is more than one reasonable (i.e. no 
-            immediate walls or obstacles), unexplored direction that the robot could potentially travel towards, write 
-            "decision point" (no quotes). Otherwise write "not decision point" (no quotes). 
-
-            Starting on a new line after this, please explain your reasoning as to how you ranked the images.
-
-            """
-        else:
-            string_graph = graph_to_string(graph)
-
-            if traversal_vertex is not None:
-                traversal_prompt_string = f"""You have just traversed back to this decision point. You are at node {graph.vertex_to_counter[traversal_vertex]}. 
-                If possible, try to explore a different area than you did last time you were at this location."""
-            else:
-                traversal_prompt_string = f""
-            first_prompt = f"""
-            You are a hexapod robot. Your main goal is to explore
-            new, accessible areas in an unknown environment as quickly as possible. You are given {len(angles)} images of your surroundings, and 
-            your task is to select one of the images to walk towards in order to achieve your main goal. You are additionally given
-            a 2D, top-down occupancy map of your surroundings, where black pixels represent occupied space (i.e. you cannot traverse through black
-            pixels on the occupancy map), white pixels represent free space, and gray pixels represent unknown space. There is also a scale in meters (red).
-            Aim to explore frontiers, or boundaries between free (white) and unknown (gray) space. Frontiers are highlighted in yellow on the occupancy map.
-
-            {traversal_prompt_string}
-
-            Your answer should be a comma-separated ranking (no spaces, with nothing else) from best to worst of the 
-            images based on which images would be best to travel towards in order to achieve your main goal. If you believe
-            you are in a dead end where none of the given images/directions will lead to new areas for exploration, your ranking
-            should be -1 and you will be navigated to the most recent decision point. Only choose this option if there are 
-            no more nearby frontiers to explore.
-
-            Here is the list of decision points on the stack, from oldest to newest (newest points will be popped off first):
-
-            {decision_point_stack}
-
-            If the decision point stack is empty, then a ranking of -1 will cease all further exploration.
-
-            On the next line after your comma-separated rankings, if there is more than 1 frontier
-            that is accessible from the current location based on the provided occupancy map, write 
-            "decision point" (no quotes). Otherwise write "not decision point" (no quotes). 
-
-            Starting on a new line after this, please explain your reasoning as to how you ranked the images.
-            """
+        prompt = """You are an autonomous exploration robot. Your goal is to explore the environment as quickly as possible.
+                    You are given a top-down occupancy map and a series of images. Each image corresponds to a "frontier," which is a boundary between known and unknown space.
+                    Based on the images and the map, choose the single best frontier to navigate towards to maximize new exploration. Avoid images/frontiers that are 
+                    very close to completely pitch-black areas as the black areas are non-traversable and will end exploration immediately if traversed to.
+                    Your answer must be only the number of the chosen frontier (e.g., "0", "1", etc.) with absolutely nothing else. On the next line after this,
+                    explain your reasoning as to how you chose the frontier."""
+        
         parts: List[types.Part | str] = [
-            first_prompt
+            prompt
         ]
 
-        # attach camera frames
-        for idx, heading in enumerate(angles):
-            parts.append(make_image_part(starting_map[idx][0]))
-            parts.append(f"Image {idx} at {heading}°.")
-
-        # map + graph overlay
-        parts.append(make_image_part(occ_map_path))
-        parts.append(f"Current yaw = {starting_yaw:.1f}°. West represents 0 degrees, South is 90 degrees, East is 180 degrees, North is 270 degrees.")
+        parts = [prompt, make_image_part(occ_map_path), "Current occupancy map."]
+        for i, view_data in frontier_views.items():
+            parts.append(make_image_part(view_data["path"]))
+            parts.append(f"Image for Frontier {i}.")
 
         #full_response = safe_send(chat, parts)
+        rospy.loginfo("Asking VLM to choose the best frontier...")
         full_response = safe_send(parts)
+        rospy.loginfo(f"VLM response: '{full_response}'")
         first_resp_path = Path(f"{images_dir}/first_response.txt")
         first_resp_path.write_text(full_response)
 
-        image_rankings = full_response.split("\n")[0].split(",")
-        if image_rankings[0] == "exploration complete":
-            print("Exploration complete.")
-            print(f"Total time: {time.time() - start_time}")
-            break
-        # if image_rankings[0].startswith("node"):
-        #     traversal_vertex = graph.vertex_labels[int(image_rankings[0].split(" ")[1])]
-        #     shortest_path = graph.dijkstra(starting_vertex, traversal_vertex)
-        #     curr_pose, curr_yaw = robot.pose
-        #     navigate_to_last_dp(move_base_client, shortest_path)
-        #     counter += 1
-        #     continue
-        if int(image_rankings[0]) == -1:
-            # dead‑end: pop last decision point if any
-            if not decision_point_stack:
-                print("Exploration complete.")
-                print(f"Total time: {time.time() - start_time}")
-                break
-            traversal_vertex = decision_point_stack.pop()
-            # (navigation to last decision point omitted for brevity)
-            shortest_path = graph.dijkstra(starting_vertex, traversal_vertex)
-            curr_pose, curr_yaw = robot.pose
-            # navigate_to_last_dp(shortest_path, curr_pose["x"], curr_pose["y"], curr_yaw)
-            navigate_to_last_dp(move_base_client, shortest_path)
-            counter += 1
-            continue
+        try:
+            # --- Step 10: VLM returns a choice ---
+            chosen_idx = int(full_response.split("\n")[0].strip())
+            chosen_frontier = frontier_views[chosen_idx]
 
-        if full_response.split("\n")[1] == "decision point":
-            decision_point_stack.append(starting_vertex)
+            desired_midpoint = chosen_frontier['midpoint']
 
-        # ------------------------------------------------------------------
-        chosen_idx = int(image_rankings[0])
-        desired_yaw = starting_map[chosen_idx][1]
-        print(f"Chosen bearing {desired_yaw}° (image {chosen_idx})")
-        robot.rotate_deg(desired_yaw - starting_yaw)
+            # --- NEW LOGIC: Determine the single best reachable goal AND orientation ---
+            current_pos, _ = robot.pose
 
-        # 5. Capture new frame for segmentation -----------------------------
-        time.sleep(1)
-        pos_dict, curr_yaw = robot.pose
-        rgb, depth         = robot.capture_rgbd()
-        selected_img_path  = save_rgb(rgb, images_dir, "selected_img")
-        _, selected_depth_img_path = save_depth(depth, images_dir, "selected_depth_img")
-
-        mask_paths, _ = run_sam_inference_and_download_masks(
-            selected_img_path,
-            f"{images_dir}/segments",
-            "") #REPLICATE API TOKEN
-        
-        # ----------------------------------------------------------- depth‑per‑segment
-        segment_depths = {}          # {label: median_in_metres or None}
-
-        for m_path in mask_paths:
-            # mask filenames are "mask_<label>.png"
-            label = int(Path(m_path).stem.split("_")[1])
-            mask  = cv2.imread(m_path, cv2.IMREAD_GRAYSCALE)
-            pixels = depth[mask > 128]
-            pixels = pixels[pixels > 0]         # drop invalid 0‑depth
-            segment_depths[label] = float(np.median(pixels)) if pixels.size else None
-
-        # Human‑readable block we’ll splice into the second prompt
-        depth_lines = "\n".join(
-            f"• segment {lbl}: {d:.2f} m" if d is not None else f"• segment {lbl}: unknown"
-            for lbl, d in sorted(segment_depths.items())
-        )
-
-
-        print(depth_lines)
-        
-        if mask_paths:
-            segment_headings = create_annotated_image(
-                selected_img_path,
-                mask_paths,
-                f"{images_dir}/segments/annotated_image.png")
-
-            # Gemini follow‑up: best segment --------------------------------
-            '''
-            The next line directly after the comma-separated ranking of the segments should be a comma-separated list of distances
-            you would like to travel towards each ranked segment, just in case you do not want to go all the way to that segment.
-            It should be in corresponding order to the segment rankings. Distances should be in meters to 2 decimal places of precision.
-            '''
-            second_prompt = f"""
-            Based on your previous selection, you have rotated towards the chosen direction and captured a new raw image of 
-            your current heading. You have also generated an annotated image with labeled segments. The first image provided
-            to you is the raw RGB image of your current heading. This is followed by the annotated image. Finally, you are also
-            given the depth image of your current heading.
-
-            Below are approximate straight‑line distances (median depth) to each segment:
-
-            {depth_lines}
-
-            Your goal is to first consider the possible segments that would be the best to approach next in order to achieve your
-            goal of efficiently exploring new areas in the environment, and discard any unreasonable segments. 
-            Make sure to use the previous prompt/response in your decision, as well as the traversal graph. You cannot go through closed doors. 
-            Assume every object in the environment is solid and immovable. You have a local navigation policy to avoid obstacles/furniture.
+            # # Find the furthest reachable point on the map towards the desired midpoint
+            # navigable_goal_coords = find_best_intermediate_goal(
+            #     current_pos['x'], current_pos['y'],
+            #     desired_midpoint[0], desired_midpoint[1],
+            #     robot
+            # )
             
-            For the most part, you should try to avoid segments on the floor or ceiling since you will be calculating the 
-            distance to the segment based on the given depth image.
-            
-            Your answer should be a comma-separated ranking (with nothing else) of the numerical labels of the segments 
-            that are still in consideration with NOTHING else (from best to worst).
+            goal_x, goal_y = desired_midpoint[0], desired_midpoint[1]
 
-            The next line directly after the comma-separated ranking of the segments should be a comma-separated list of distances
-            you would like to travel towards each ranked segment, just in case you do not want to go all the way to that segment.
-            It should be in corresponding order to the segment rankings. Distances should be in meters to 2 decimal places of precision.
+            frontier_contour = closest_frontiers[chosen_idx][2]
+            goal_yaw_rad = get_frontier_orientation(frontier_contour, (goal_x, goal_y), robot)
 
-            The next line(s) directly after this should be the actions you would like to execute for 
-            each segment in your ranking, for example if the ranking was 5,3,2: 
+            # Call the navigation function with the new, smarter orientation
+            success = navigate_with_move_base(move_base_client, robot, goal_x, goal_y, goal_yaw_rad)
+            rounded_midpoint = round_midpoint(desired_midpoint)
+            frontier_blacklist.add(rounded_midpoint)
+            if not success:
+                rospy.logwarn(f"Navigation to {rounded_midpoint} failed.")
 
-            Rotate towards segment 5, walk along the hallway towards the living room.
-            Rotate towards segment 3, walk towards the open doorway to the garage.
-            Rotate towards segment 2, walk to the back wall of the bedroom.
-            
-            Starting on a new line afterwards, please explain your reasoning for your choices (on a new line). 
-            """
-            seg_parts: List[types.Part | str] = [
-                second_prompt
-            ]
-            seg_parts.append(make_image_part(selected_img_path))
-            seg_parts.append("Raw RGB frame.")
-            seg_parts.append(make_image_part(f"{images_dir}/segments/annotated_image.png"))
-            seg_parts.append("Annotated segments.")
-            seg_parts.append(make_image_part(selected_depth_img_path))
-            seg_parts.append("Depth preview (8 bit).")
+        except (ValueError, KeyError) as e:
+            rospy.logerr(f"Could not parse VLM response or find chosen frontier: {e}. Skipping this step.")
 
-            #seg_response = safe_send(chat, seg_parts)
-            seg_response = safe_send(seg_parts)
-            second_resp_path = Path(f"{images_dir}/second_response.txt")
-            second_resp_path.write_text(seg_response)
-
-            segment_rankings = seg_response.split("\n")[0].split(",")
-            selected_segment = int(segment_rankings[0])
-            # if selected_segment == -1:
-            #     curr_pose, curr_yaw = robot.pose
-            #     if not decision_point_stack:
-            #         print("Exploration complete.")
-            #         break
-            #     traversal_vertex = decision_point_stack.pop()
-            #     shortest_path = graph.dijkstra(starting_vertex, traversal_vertex)
-            #     navigate_to_last_dp(shortest_path, curr_pose["x"], curr_pose["y"], curr_yaw)
-            #     counter += 1
-            #     continue
-
-            # Depth‑based distance calc (same as original)
-            chosen_mask = cv2.imread(
-                f"{images_dir}/segments/mask_{selected_segment}.png", cv2.IMREAD_GRAYSCALE)
-            depth_pixels = depth[chosen_mask > 128]
-            depth_pixels = depth_pixels[depth_pixels > 0]
-            distance = float(np.median(depth_pixels)) if len(depth_pixels) else 0.75
-
-            # Get the distance to travel from the Gemini response
-            segment_distances = seg_response.split("\n")[1].split(",")
-            selected_segment_distance = float(segment_distances[0])
-
-            distance = selected_segment_distance
-
-            # Get the robot's current pose to calculate the goal from
-            current_pos, current_yaw_deg = robot.pose
-            angle_to_rotate_seg = segment_headings[selected_segment]
-            current_yaw_rad = math.radians(current_yaw_deg)
-            goal_yaw_rad = math.radians((current_yaw_deg + angle_to_rotate_seg) + 360 % 360)
-
-            # Define a safe distance to pull the goal back from the wall (in meters)
-            safety_offset = 0.0 #0.2
-            rospy.loginfo(f"Target distance is {distance:.2f}m, using dynamic safety offset of {safety_offset:.2f}m")
-
-            # Ensure the robot doesn't try to move backward if it's already too close
-            if distance > safety_offset:
-                safe_distance = distance - safety_offset
-
-                # Calculate the new, safe goal coordinates
-                goal_x = current_pos['x'] + safe_distance * math.cos(goal_yaw_rad)#math.cos(current_yaw_rad)
-                goal_y = current_pos['y'] + safe_distance * math.sin(goal_yaw_rad)#math.sin(current_yaw_rad)
-
-                rospy.loginfo(f"→ Segment {selected_segment}, target at {distance:.2f} m, navigating to safe distance of {safe_distance:.2f} m")
-
-                # Call the navigation function with the safe goal. The orientation is the robot's current orientation.
-                navigate_with_move_base(move_base_client, robot, goal_x, goal_y, goal_yaw_rad)
-            else:
-                rospy.logwarn(f"Target distance ({distance:.2f} m) is less than safety offset. Not moving.")
-
-            # print(f"Rotate to segment {selected_segment}")
-            # robot.rotate_deg(angle_to_rotate_seg)
-
-            # segment_distances = seg_response.split("\n")[1].split(",")
-            # selected_segment_distance = float(segment_distances[0])
-
-            # #print(f"→ Segment {selected_segment}, travel {distance:.2f} m")
-            # print(f"→ Segment {selected_segment}, VLM travel {selected_segment_distance:.2f} m")
-
-            # #robot.drive_forward(distance)
-            # print(selected_segment_distance)
-            # robot.drive_forward(selected_segment_distance)
-
-            with second_resp_path.open("a", encoding="utf‑8") as f:   # "a" = append
-                f.write("\n")
-                f.write(depth_lines)
-                f.write("\n")
-                f.write(f"Chose Segment {selected_segment}, final heading {robot.pose[1]} degrees, travel {distance:.2f} m")
-                #f.write(f"Chose Segment {selected_segment}, rotated {angle_to_rotate_seg} degrees, final heading {robot.pose[1]} degrees, travel {distance:.2f} m")
-
-            # Graph bookkeeping -------------------------------------------
-            prev_vertex      = starting_vertex
-            traversal_vertex = None
-            counter         += 1
-
-        else:
-            print("SAM produced no usable masks – skipping movement.")
-            counter += 1
+        robot.save_raw_map(out_folder="map_graphs", out_filename=f"map_graphs_{counter}.png")
+        prev_vertex = starting_vertex
+        traversal_vertex = None
+        counter += 1
 
 
 if __name__ == "__main__":

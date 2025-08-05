@@ -41,10 +41,10 @@ TASK:
 
 DATASET:
   TYPE: PointNav-v1
-  SPLIT: test
-  DATA_PATH: data/datasets/pointnav/mp3d/v1/{split}/{split}.json.gz
-  # SPLIT: 1LXtFkjw3qL
-  # DATA_PATH: data/datasets/pointnav/mp3d/v1/train/content/{split}.json.gz
+  # SPLIT: test
+  # DATA_PATH: data/datasets/pointnav/mp3d/v1/{split}/{split}.json.gz
+  SPLIT: PX4nDJXEHrG #2n8kARJN3HM #PX4nDJXEHrG
+  DATA_PATH: data/datasets/pointnav/mp3d/v1/train/content/{split}.json.gz
 
 VIDEO_OPTION: ["disk"]
 VIDEO_DIR: "videos/test_habitat_evaluator_with_physics/"

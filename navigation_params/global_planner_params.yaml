@@ -1,0 +1,12 @@
+# Parameters for the default global planner (global_planner/GlobalPlanner)
+GlobalPlanner:
+  # This is the most important parameter for exploration.
+  # It allows move_base to create a plan to a goal even if that goal is in "unknown" space.
+  # Since frontiers are by definition on the edge of unknown space, this is critical.
+  allow_unknown: true
+
+  # Use the quadratic calculation for the potential field. It's generally better.
+  use_quadratic: true
+
+  # Use a grid path, which is more reliable for grid-based planners.
+  use_grid_path: true
