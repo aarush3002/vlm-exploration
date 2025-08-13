@@ -36,7 +36,7 @@
         <param name="completion_timeout" value="70.0" /> <!--35-->
         
         <!-- The folder where the final summary map will be saved. -->
-        <param name="output_folder" value="/home/aarush/final_explore_lite_results/S9hNv5qa7GM/" />
+        <param name="output_folder" value="/home/aarush/final_explore_lite_results/JmbYfDe2QKZ/" />
 
         <!-- The map topic the tracker should subscribe to. -->
         <param name="map_topic" value="/grid_map" />

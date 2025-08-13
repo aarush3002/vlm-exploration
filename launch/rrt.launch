@@ -39,7 +39,7 @@
     <param name="namespace_init_count" value="1"/>
 
 
-    <node pkg="rrt_exploration" type="global_rrt_detector" name="global_detector" output="screen">
+    <!-- <node pkg="rrt_exploration" type="global_rrt_detector" name="global_detector" output="screen">
         <param name="eta" value="$(arg Geta)"/>
         <param name="map_topic" value="$(arg namespace)/grid_map"/>
     </node>
@@ -48,12 +48,12 @@
         <param name="eta" value="$(arg eta)"/>
         <param name="map_topic" value="$(arg namespace)/grid_map"/>
         <param name="robot_frame" value="base_frame"/>
-    </node>
+    </node> -->
 
-    <!-- <node pkg="rrt_exploration" type="frontier_opencv_detector.py" name="opencv_detector" output="screen">
+    <node pkg="rrt_exploration" type="frontier_opencv_detector.py" name="opencv_detector" output="screen">
         <param name="map_topic" value="$(arg namespace)/grid_map" />
         <param name="rate" value="2" /> 
-    </node> -->
+    </node>
     
     
     <node pkg="rrt_exploration" type="filter.py" name="filter" output="screen">
@@ -86,8 +86,8 @@
         <param name="completion_timeout" value="120.0" /> <!--70-->
         
         <!-- The folder where the final summary map will be saved. -->
-        <param name="output_folder" value="/home/aarush/final_rrt_results/2t7WUuJeko7/" />
-        <!-- <param name="output_folder" value="/home/aarush/final_opencv_results/e9zR4mvMWw7/" /> -->
+        <!-- <param name="output_folder" value="/home/aarush/final_rrt_results/2t7WUuJeko7/" /> -->
+        <param name="output_folder" value="/home/aarush/final_opencv_results/29hnd4uzFmX/" />
 
         <!-- The map topic the tracker should subscribe to. -->
         <param name="map_topic" value="/grid_map" />

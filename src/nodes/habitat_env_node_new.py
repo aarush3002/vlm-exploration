@@ -48,6 +48,18 @@ from sensor_msgs.msg import Imu
 import os
 import cv2
 
+from habitat.sims.habitat_simulator.habitat_simulator import AgentState
+import quaternion
+
+# START: Matplotlib backend fix
+# Force matplotlib to use a non-GUI backend to prevent Qt errors in headless environments.
+# This must be done before importing pyplot.
+import matplotlib
+matplotlib.use('Agg')
+# END: Matplotlib backend fix
+import matplotlib.pyplot as plt
+
+
 class HabitatEnvNode:
     r"""
     A class to represent a ROS node with a Habitat simulator inside.
@@ -120,21 +132,12 @@ class HabitatEnvNode:
 
         # enable_eval is set to true by eval_episode() to allow
         # publish_sensor_observations() and step() to run
-        # enable_eval is set to false in one of the three conditions:
-        # 1) by publish_and_step_for_eval() after an episode is done;
-        # 2) by publish_and_step_for_roam() after a roaming session
-        #    is done;
-        # 3) by main() after all episodes have been evaluated.
-        # all_episodes_evaluated is set to True by main() to indicate
-        # no more episodes left to evaluate. eval_episodes() then signals
-        # back to evaluator, and set it to False again for re-use
         self.all_episodes_evaluated = False
         self.enable_eval = False
         self.enable_eval_cv = Condition()
 
         # enable_reset is set to true by eval_episode() or roam() to allow
         # reset() to run
-        # enable_reset is set to false by reset() after simulator reset
         self.enable_reset_cv = Condition()
         with self.enable_reset_cv:
             self.enable_reset = False
@@ -148,8 +151,6 @@ class HabitatEnvNode:
             if self.use_continuous_agent:
                 self.linear_vel = None
                 self.angular_vel = None
-                # self.linear_vel = np.array([0.0, 0.0, 0.0])
-                # self.angular_vel = np.array([0.0, 0.0, 0.0])
             else:
                 self.action = None
             self.count_steps = None
@@ -162,6 +163,7 @@ class HabitatEnvNode:
         with self.timing_lock:
             self.t_reset_elapsed = None
             self.t_sim_elapsed = None
+            self.start_time = None # For total wall-clock time
 
         # video production variables
         self.make_video = False
@@ -188,29 +190,21 @@ class HabitatEnvNode:
         self.pub_rate = float(pub_rate)
 
         # environment publish and subscribe queue size
-        # TODO: make them configurable by constructor argument
         self.sub_queue_size = 10
         self.pub_queue_size = 10
 
         # publish to sensor topics
-        # we create one topic for each of RGB, Depth and GPS+Compass
-        # sensor
         if "RGB_SENSOR" in self.config.SIMULATOR.AGENT_0.SENSORS:
             self.pub_rgb = rospy.Publisher("rgb", Image, queue_size=self.pub_queue_size)
         if "DEPTH_SENSOR" in self.config.SIMULATOR.AGENT_0.SENSORS:
             if self.use_continuous_agent:
-                # if we are using a ROS-based agent, we publish depth images
-                # in type Image
                 self.pub_depth = rospy.Publisher(
                     "depth", Image, queue_size=self.pub_queue_size
                 )
-                # also publish depth camera info
                 self.pub_camera_info = rospy.Publisher(
                     "camera_info", CameraInfo, queue_size=self.pub_queue_size
                 )
             else:
-                # otherwise, we publish in type DepthImage to preserve as much
-                # accuracy as possible
                 self.pub_depth = rospy.Publisher(
                     "depth", DepthImage, queue_size=self.pub_queue_size
                 )
@@ -235,6 +229,28 @@ class HabitatEnvNode:
             self.sub = rospy.Subscriber(
                 "action", Int16, self.callback, queue_size=self.sub_queue_size
             )
+        
+        # Distance and logging variables
+        self.last_position = None
+        self.total_distance = 0.0
+        self.log_distance_interval = 0.5
+        self.next_log_distance = 0.0
+        
+        experiment_name = "JmbYfDe2QKZ"
+        #self.home_dir = f"/home/aarush/final_gemini_results/{experiment_name}"
+        # self.home_dir = f"/home/aarush/final_explore_lite_results/{experiment_name}"
+        #self.home_dir = f"/home/aarush/final_opencv_results/{experiment_name}"
+        #self.home_dir = f"/home/aarush/final_tare_results/{experiment_name}"
+        self.home_dir = f"/home/aarush/final_dsv_results/{experiment_name}"
+        self.data_log_filepath = os.path.join(self.home_dir, "distance_vs_exploration.txt")
+
+        # Ensure output directory exists and create the log file
+        try:
+            os.makedirs(self.home_dir, exist_ok=True)
+            with open(self.data_log_filepath, 'w') as f:
+                f.write("# Distance(m), Exploration(%)\n")
+        except OSError as e:
+            rospy.logerr(f"Could not create output directory or file: {e}")
 
         # wait until connections with the agent is established
         self.logger.info("env making sure agent is subscribed to sensor topics...")
@@ -249,26 +265,19 @@ class HabitatEnvNode:
 
     def reset(self):
         r"""
-        Resets the agent and the simulator. Requires being called only from
-        the main thread.
+        Resets the agent and the simulator.
         """
-        # reset the simulator
         with self.enable_reset_cv:
             while self.enable_reset is False:
                 self.enable_reset_cv.wait()
 
-            # disable reset
             self.enable_reset = False
 
-            # if shutdown is signalled, return immediately
             with self.shutdown_lock:
                 if self.shutdown:
                     return
 
-            # locate the last episode specified
             if self.episode_id_last != EvalEpisodeSpecialIDs.REQUEST_NEXT:
-                # iterate to the last episode. If not found, the loop exits upon a
-                # StopIteration exception
                 last_ep_found = False
                 while not last_ep_found:
                     try:
@@ -285,70 +294,70 @@ class HabitatEnvNode:
                         self.logger.info("Last episode not found!")
                         raise StopIteration
             else:
-                # evaluate from the next episode
                 pass
 
-            # initialize timing variables
             with self.timing_lock:
                 self.t_reset_elapsed = 0.0
                 self.t_sim_elapsed = 0.0
+                self.start_time = None # Reset wall-clock time
 
-            # ------------ log reset time start ------------
             t_reset_start = time.clock()
-            # --------------------------------------------
-
-            # initialize observations
             self.observations = self.env.reset()
-
-            # ------------  log reset time end  ------------
             t_reset_end = time.clock()
             with self.timing_lock:
                 self.t_reset_elapsed += t_reset_end - t_reset_start
-            # --------------------------------------------
 
-            # initialize step counter
+            # ================================================================== #
+            # === START: ADD THIS CODE TO FORCE A (0,0,0) STARTING POSE ======== #
+            # ================================================================== #
+
+            # Define the desired starting position [x, y, z] and orientation (as a quaternion)
+            # NOTE: In Habitat's coordinate system, Y is the vertical axis.
+            # start_position = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+            # start_rotation = quaternion.from_euler_angles(np.array([0.0, -math.pi / 2, 0.0])) # 0 Yaw
+
+            # # Get the agent and create a new state object
+            # agent = self.env._env._sim.get_agent(0)
+            # new_state = AgentState(position=start_position, rotation=start_rotation)
+
+            # # Set the agent's state to the new starting pose
+            # agent.set_state(new_state)
+
+            # # Refresh observations from the new pose
+            # self.observations = self.env._env._sim.get_sensor_observations()
+
+            # self.logger.info("Agent start pose has been manually set to (0, 0, 0) with 0 yaw.")
+
+            # ================================================================== #
+            # === END: ADDED CODE ============================================== #
+            # ================================================================== #
+
             with self.command_cv:
                 self.count_steps = 0
+            
+            # Reset distance tracking and log initial state
+            self.total_distance = 0.0
+            self.last_position = None
+            self.next_log_distance = 0.0
+            self._log_data()
+            self.next_log_distance += self.log_distance_interval
 
     def _enable_reset(self, request, enable_roam):
-        r"""
-        Helper method to set self.episode_id_last, self.scene_id_last,
-        enable reset and alert threads waiting for reset to be enabled.
-        :param request: request dictionary, should contain field
-            `episode_id_last` and `scene_id_last`.
-        :param enable_roam: if should enable free-roam mode or not.
-        """
         with self.enable_reset_cv:
-            # unpack evaluator request
             self.episode_id_last = str(request.episode_id_last)
             self.scene_id_last = str(request.scene_id_last)
-
-            # enable (env) reset
             assert self.enable_reset is False
             self.enable_reset = True
             self.enable_roam = enable_roam
             self.enable_reset_cv.notify()
 
     def _enable_evaluation(self):
-        r"""
-        Helper method to enable evaluation and alert threads waiting for evalu-
-        ation to be enabled.
-        """
         with self.enable_eval_cv:
             assert self.enable_eval is False
             self.enable_eval = True
             self.enable_eval_cv.notify()
 
     def eval_episode(self, request):
-        r"""
-        ROS service handler which evaluates one episode and returns evaluation
-        metrics.
-        :param request: evaluation parameters provided by evaluator, including
-            last episode ID and last scene ID.
-        :return: 1) episode ID and scene ID; 2) metrics including distance-to-
-        goal, success and spl.
-        """
-        # make a response dict
         resp = {
             "episode_id": EvalEpisodeSpecialIDs.RESPONSE_NO_MORE_EPISODES,
             "scene_id": "",
@@ -361,7 +370,6 @@ class HabitatEnvNode:
         }
 
         if str(request.episode_id_last) == EvalEpisodeSpecialIDs.REQUEST_SHUTDOWN:
-            # if shutdown request, enable reset and return immediately
             with self.shutdown_lock:
                 self.shutdown = True
             with self.enable_reset_cv:
@@ -369,19 +377,13 @@ class HabitatEnvNode:
                 self.enable_reset_cv.notify()
             return resp
         else:
-            # if not shutting down, enable reset and evaluation
             self._enable_reset(request=request, enable_roam=False)
-
-            # enable evaluation
             self._enable_evaluation()
-
-            # wait for evaluation to be over
             with self.enable_eval_cv:
                 while self.enable_eval is True:
                     self.enable_eval_cv.wait()
 
                 if self.all_episodes_evaluated is False:
-                    # collect episode info and metrics
                     resp = {
                         "episode_id": str(self.env._env.current_episode.episode_id),
                         "scene_id": str(self.env._env.current_episode.scene_id),
@@ -399,49 +401,32 @@ class HabitatEnvNode:
                         with self.command_cv:
                             metrics_dic[NumericalMetrics.NUM_STEPS] = self.count_steps
                             metrics_dic[NumericalMetrics.SIM_TIME] = (
-                                self.t_sim_elapsed / self.count_steps
+                                self.t_sim_elapsed / self.count_steps if self.count_steps > 0 else 0
                             )
                             metrics_dic[
                                 NumericalMetrics.RESET_TIME
                             ] = self.t_reset_elapsed
                     resp.update(metrics_dic)
                 else:
-                    # no episode is evaluated. Toggle the flag so the env node
-                    # can be reused
                     self.all_episodes_evaluated = False
                 return resp
 
     def roam(self, request):
-        r"""
-        ROS service handler which allows an agent to roam freely within a scene,
-        starting from the initial position of the specified episode.
-        :param request: episode ID and scene ID.
-        :return: acknowledge signal.
-        """
-        # if not shutting down, enable reset and evaluation
         self._enable_reset(request=request, enable_roam=True)
-
-        # set video production flag
         self.make_video = request.make_video
         self.video_frame_period = request.video_frame_period
-
-        # enable evaluation
         self._enable_evaluation()
-
         return True
 
     def cv2_to_depthmsg(self, depth_img: np.ndarray):
-        r"""
-        Converts a Habitat depth image to a ROS DepthImage message.
-        :param depth_img: depth image as a numpy array
-        :returns: a ROS Image message if using continuous agent; or
-            a ROS DepthImage message if using discrete agent
-        """
         if self.use_continuous_agent:
-            # depth reading should be denormalized, so we get
-            # readings in meters
             assert self.config.SIMULATOR.DEPTH_SENSOR.NORMALIZE_DEPTH is False
-            depth_img_in_m = np.squeeze(depth_img, axis=2)
+            # depth_img_in_m = np.squeeze(depth_img, axis=2)
+            if depth_img.ndim == 3:
+                depth_img_in_m = np.squeeze(depth_img, axis=2)
+            else:
+                # If it's already 2D (H, W), use it directly
+                depth_img_in_m = depth_img
             depth_msg = CvBridge().cv2_to_imgmsg(
                 depth_img_in_m.astype(np.float32), encoding="passthrough"
             )
@@ -453,26 +438,17 @@ class HabitatEnvNode:
         return depth_msg
 
     def obs_to_msgs(self, observations_hab: Observations):
-        r"""
-        Converts Habitat observations to ROS messages.
-
-        :param observations_hab: Habitat observations.
-        :return: a dictionary containing RGB/depth/Pos+Orientation readings
-        in ROS Image/Pose format.
-        """
         observations_ros = {}
-
-        # take the current sim time to later use as timestamp
-        # for all simulator readings
         t_curr = rospy.Time.now()
-        print("time", t_curr)
 
-        for sensor_uuid, _ in observations_hab.items():
-            sensor_data = observations_hab[sensor_uuid]
-            # we publish to each of RGB, Depth and GPS+Compass sensor
+        for sensor_uuid, sensor_data in observations_hab.items():
             if sensor_uuid == "rgb":
+                # sensor_msg = CvBridge().cv2_to_imgmsg(
+                #     sensor_data.astype(np.uint8), encoding="rgb8"
+                # )
+                rgb_image = cv2.cvtColor(sensor_data, cv2.COLOR_RGBA2RGB)
                 sensor_msg = CvBridge().cv2_to_imgmsg(
-                    sensor_data.astype(np.uint8), encoding="rgb8"
+                    rgb_image.astype(np.uint8), encoding="rgb8"
                 )
             elif sensor_uuid == "depth":
                 sensor_msg = self.cv2_to_depthmsg(sensor_data)
@@ -480,395 +456,159 @@ class HabitatEnvNode:
                 sensor_msg = PointGoalWithGPSCompass()
                 sensor_msg.distance_to_goal = sensor_data[0]
                 sensor_msg.angle_to_goal = sensor_data[1]
-            # add header to message, and add the message to observations_ros
-            if sensor_uuid in ["rgb", "depth", "pointgoal_with_gps_compass"]:
-                h = Header()
-                h.stamp = t_curr
-                #EDIT
-                h.frame_id = "laser" #camera_rgb_optical_frame
-                #EDIT
-                sensor_msg.header = h
-                observations_ros[sensor_uuid] = sensor_msg
+            else:
+                continue
 
+            h = Header()
+            h.stamp = t_curr
+            h.frame_id = "laser" 
+            sensor_msg.header = h
+            observations_ros[sensor_uuid] = sensor_msg
         return observations_ros
     
-
-    # def _publish_gt_odom(self):
-    #     st = self.env._env._sim.get_agent_state()
-
-    #     # Debug prints (keep these, they are useful!)
-    #     print("Habitat Position", st.position)
-    #     print("Habitat rotation (x,y,z,w)", st.rotation.x, st.rotation.y, st.rotation.z, st.rotation.w)
-    #     print("Habitat velocity", st.velocity)
-    #     print("Habitat angular velocity", st.angular_velocity)
-
-    #     # --------------------------- Odometry msg ---------------------------
-    #     odom = Odometry()
-    #     odom.header.stamp = rospy.Time.now()
-    #     odom.header.frame_id = "odom"       # Odometry frame (fixed world frame)
-    #     odom.child_frame_id = "base_frame"  # Robot's base frame
-
-    #     # Publish the /clock message using the same timestamp as odom/tf
-    #     clock_msg = Clock()
-    #     clock_msg.clock = odom.header.stamp # Use the same timestamp
-    #     self.clock_pub.publish(clock_msg)
-
-    #     # --- Position Transformation: Habitat (X_h, Y_h, Z_h) to ROS (X_r, Y_r, Z_r)
-    #     # Habitat: X_h=forward, Y_h=up, Z_h=right
-    #     # ROS:     X_r=forward, Y_r=left, Z_r=up
-
-    #     # X_r = X_h (forward is forward)
-    #     # Y_r = -Z_h (right in Habitat is left in ROS)
-    #     # Z_r = Y_h (up in Habitat is up in ROS)
-    #     odom.pose.pose.position.x = st.position[0]
-    #     odom.pose.pose.position.y = -st.position[2]
-    #     odom.pose.pose.position.z = st.position[1]  # Z usually 0 if robot on flat ground
-
-    #     # --- Orientation Transformation: Habitat (q_h) to ROS (q_ros)
-    #     # The transformation from Habitat's coordinate system to ROS REP-103:
-    #     # This basis transform maps Habitat's X, Y, Z to ROS's X, Z, -Y before rotation.
-    #     # A rotation of -90 degrees around X followed by +90 degrees around Z should map:
-    #     # Habitat X -> ROS X
-    #     # Habitat Y (up) -> ROS Z (up)
-    #     # Habitat Z (right) -> ROS Y (left)
-    #     # This quaternion is static and represents the difference in coordinate conventions.
-    #     q_hab_to_ros_basis = quaternion_from_euler(math.radians(-90), 0.0, math.radians(90), axes='sxyz')
-        
-    #     # Agent's rotation in Habitat's frame
-    #     q_h = [st.rotation.x, st.rotation.y, st.rotation.z, st.rotation.w]
-
-    #     # Combine the basis transformation with the agent's rotation.
-    #     # This order is correct: first apply the fixed basis transformation, then the agent's rotation within that new basis.
-    #     q_ros = quaternion_multiply(q_hab_to_ros_basis, q_h)
-
-    #     # --- Flatten roll & pitch so odom is purely 2D (recommended for 2D nav)
-    #     # This assumes the robot always stays on a flat plane.
-    #     roll, pitch, yaw = euler_from_quaternion(q_ros, axes="sxyz")
-        
-    #     # --- RE-INTRODUCE YAW DIRECTION REVERSAL FIX ---
-    #     yaw_corrected = -yaw # Negate the yaw angle
-
-    #     q_flat = quaternion_from_euler(0.0, 0.0, yaw_corrected, axes="sxyz") # Keep only the corrected yaw
-        
-    #     odom.pose.pose.orientation.x = q_flat[0]
-    #     odom.pose.pose.orientation.y = q_flat[1]
-    #     odom.pose.pose.orientation.z = q_flat[2]
-    #     odom.pose.pose.orientation.w = q_flat[3]
-
-    #     # --- Linear Velocity Transformation
-    #     R_hab_to_ros_basis = quaternion_matrix(q_hab_to_ros_basis)[:3,:3]
-    #     v_h = np.array([st.velocity[0], st.velocity[1], st.velocity[2]]) # Habitat velocity as numpy array
-
-    #     # Apply the same rotation to the velocity vector
-    #     v_ros = R_hab_to_ros_basis @ v_h
-
-    #     odom.twist.twist.linear.x = v_ros[0]
-    #     odom.twist.twist.linear.y = v_ros[1]
-    #     odom.twist.twist.linear.z = v_ros[2]
-
-    #     # --- Angular Velocity Transformation
-    #     w_h = np.array([st.angular_velocity[0], st.angular_velocity[1], st.angular_velocity[2]])
-
-    #     # Apply the same rotation to the angular velocity vector
-    #     w_ros = R_hab_to_ros_basis @ w_h
-
-    #     odom.twist.twist.angular.x = 0.0
-    #     odom.twist.twist.angular.y = 0.0
-    #     # --- RE-INTRODUCE YAW DIRECTION REVERSAL FIX FOR ANGULAR VELOCITY ---
-    #     odom.twist.twist.angular.z = -w_ros[2] # Negate angular Z velocity to match yaw correction
-
-    #     self.pub_odom.publish(odom)
-
-    #     # --------------------------- TF  odom → base_frame ------------------
-    #     # This TF broadcast takes the pose directly from the published Odometry message.
-    #     tf = geometry_msgs.msg.TransformStamped()
-    #     tf.header = odom.header          # Uses the same timestamp and frame_id="odom"
-    #     tf.child_frame_id = "base_frame" # The child is the robot's base
-    #     tf.transform.translation.x = odom.pose.pose.position.x
-    #     tf.transform.translation.y = odom.pose.pose.position.y
-    #     tf.transform.translation.z = odom.pose.pose.position.z
-    #     tf.transform.rotation = odom.pose.pose.orientation # Use the flattened, corrected orientation
-    #     self.tf_br.sendTransform(tf)
-
-    #     # --------------------------------------------------------------------
-    #     # IMU message (orientation + angular velocity copy from Odometry)
-    #     # The IMU data should typically be in the sensor's own frame, but for a
-    #     # simple robot, it often mirrors the base_frame's angular velocity.
-    #     imu = Imu()
-    #     imu.header = odom.header            # same stamp + frame (odom)
-    #     imu.orientation = odom.pose.pose.orientation # This is the flattened, ROS-aligned, and yaw-corrected orientation
-    #     imu.angular_velocity = odom.twist.twist.angular # This is the 2D, yaw-corrected angular velocity
-
-    #     # Mark linear acceleration “unknown” if not provided by Habitat
-    #     imu.linear_acceleration.x = imu.linear_acceleration.y = imu.linear_acceleration.z = 0.0
-    #     imu.linear_acceleration_covariance[0] = -1.0 # Standard way to mark covariance as unknown/unsupported
-
-    #     # simple small covariances – tune if desired
-    #     # These are placeholder values. For real systems, they come from sensor specs.
-    #     for i in (0, 4, 8):
-    #         imu.orientation_covariance[i] = 1e-3
-    #         imu.angular_velocity_covariance[i] = 1e-3
-
-    #     self.pub_imu.publish(imu)
-
     def _publish_gt_odom(self):
         st = self.env._env._sim.get_agent_state()
-
-        # Debug prints (keep these, they are useful!)
-        print("Habitat Position", st.position)
-        print("Habitat rotation (x,y,z,w)", st.rotation.x, st.rotation.y, st.rotation.z, st.rotation.w)
-        print("Habitat velocity", st.velocity)
-        print("Habitat angular velocity", st.angular_velocity)
-
-        # --------------------------- Odometry msg ---------------------------
         odom = Odometry()
         odom.header.stamp = rospy.Time.now()
-        odom.header.frame_id = "odom"       # Odometry frame (fixed world frame)
-        odom.child_frame_id = "base_frame"  # Robot's base frame
+        odom.header.frame_id = "odom"
+        odom.child_frame_id = "base_frame"
 
-        # Publish the /clock message using the same timestamp as odom/tf
         clock_msg = Clock()
-        clock_msg.clock = odom.header.stamp # Use the same timestamp
+        clock_msg.clock = odom.header.stamp
         self.clock_pub.publish(clock_msg)
 
-        # --- Position Transformation: Habitat (X_h, Y_h, Z_h) to ROS (X_r, Y_r, Z_r)
-        # Habitat: X_h=forward, Y_h=up, Z_h=right
-        # ROS:     X_r=forward, Y_r=left, Z_r=up
-
-        # X_r = X_h (forward is forward)
-        # Y_r = -Z_h (right in Habitat is left in ROS)
-        # Z_r = Y_h (up in Habitat is up in ROS)
         odom.pose.pose.position.x = -st.position[0]
         odom.pose.pose.position.y = st.position[2]
-        odom.pose.pose.position.z = st.position[1]  # Z usually 0 if robot on flat ground
+        odom.pose.pose.position.z = st.position[1]
 
-        # --- Orientation Transformation: Habitat (q_h) to ROS (q_ros)
-        # The transformation from Habitat's coordinate system to ROS REP-103:
-        # This basis transform maps Habitat's X, Y, Z to ROS's X, Z, -Y before rotation.
-        # A rotation of -90 degrees around X followed by +90 degrees around Z should map:
-        # Habitat X -> ROS X
-        # Habitat Y (up) -> ROS Z (up)
-        # Habitat Z (right) -> ROS Y (left)
-        # This quaternion is static and represents the difference in coordinate conventions.
         q_hab_to_ros_basis = quaternion_from_euler(math.radians(-90), 0.0, math.radians(90), axes='sxyz')
-        
-        # Agent's rotation in Habitat's frame
         q_h = [st.rotation.x, st.rotation.y, st.rotation.z, st.rotation.w]
-
-        # Combine the basis transformation with the agent's rotation.
-        # This order is correct: first apply the fixed basis transformation, then the agent's rotation within that new basis.
         q_ros = quaternion_multiply(q_hab_to_ros_basis, q_h)
-
-        # --- Flatten roll & pitch so odom is purely 2D (recommended for 2D nav)
-        # This assumes the robot always stays on a flat plane.
-        roll, pitch, yaw = euler_from_quaternion(q_ros, axes="sxyz")
-        
-        # --- RE-INTRODUCE YAW DIRECTION REVERSAL FIX ---
-        yaw_corrected = -yaw # Negate the yaw angle
-
-        q_flat = quaternion_from_euler(0.0, 0.0, yaw_corrected, axes="sxyz") # Keep only the corrected yaw
+        _, _, yaw = euler_from_quaternion(q_ros, axes="sxyz")
+        q_flat = quaternion_from_euler(0.0, 0.0, -yaw)
         
         odom.pose.pose.orientation.x = q_flat[0]
         odom.pose.pose.orientation.y = q_flat[1]
         odom.pose.pose.orientation.z = q_flat[2]
         odom.pose.pose.orientation.w = q_flat[3]
 
-        # --- Linear Velocity Transformation
         R_hab_to_ros_basis = quaternion_matrix(q_hab_to_ros_basis)[:3,:3]
-        v_h = np.array([st.velocity[0], st.velocity[1], st.velocity[2]]) # Habitat velocity as numpy array
-
-        # Apply the same rotation to the velocity vector
+        v_h = np.array(st.velocity)
         v_ros = R_hab_to_ros_basis @ v_h
+        odom.twist.twist.linear.x, odom.twist.twist.linear.y, odom.twist.twist.linear.z = v_ros
 
-        odom.twist.twist.linear.x = v_ros[0]
-        odom.twist.twist.linear.y = v_ros[1]
-        odom.twist.twist.linear.z = v_ros[2]
-
-        # --- Angular Velocity Transformation
-        w_h = np.array([st.angular_velocity[0], st.angular_velocity[1], st.angular_velocity[2]])
-
-        # Apply the same rotation to the angular velocity vector
+        w_h = np.array(st.angular_velocity)
         w_ros = R_hab_to_ros_basis @ w_h
-
         odom.twist.twist.angular.x = 0.0
         odom.twist.twist.angular.y = 0.0
-        # --- RE-INTRODUCE YAW DIRECTION REVERSAL FIX FOR ANGULAR VELOCITY ---
-        odom.twist.twist.angular.z = -w_ros[2] # Negate angular Z velocity to match yaw correction
+        odom.twist.twist.angular.z = -w_ros[2]
 
         self.pub_odom.publish(odom)
 
-        # --------------------------- TF  odom → base_frame ------------------
-        # This TF broadcast takes the pose directly from the published Odometry message.
         tf = geometry_msgs.msg.TransformStamped()
-        tf.header = odom.header          # Uses the same timestamp and frame_id="odom"
-        tf.child_frame_id = "base_frame" # The child is the robot's base
-        tf.transform.translation.x = odom.pose.pose.position.x
-        tf.transform.translation.y = odom.pose.pose.position.y
-        tf.transform.translation.z = odom.pose.pose.position.z
-        tf.transform.rotation = odom.pose.pose.orientation # Use the flattened, corrected orientation
+        tf.header, tf.child_frame_id = odom.header, odom.child_frame_id
+        tf.transform.translation = odom.pose.pose.position
+        tf.transform.rotation = odom.pose.pose.orientation
         self.tf_br.sendTransform(tf)
 
-        # --------------------------------------------------------------------
-        # IMU message (orientation + angular velocity copy from Odometry)
-        # The IMU data should typically be in the sensor's own frame, but for a
-        # simple robot, it often mirrors the base_frame's angular velocity.
         imu = Imu()
-        imu.header = odom.header            # same stamp + frame (odom)
-        imu.orientation = odom.pose.pose.orientation # This is the flattened, ROS-aligned, and yaw-corrected orientation
-        imu.angular_velocity = odom.twist.twist.angular # This is the 2D, yaw-corrected angular velocity
-
-        # Mark linear acceleration “unknown” if not provided by Habitat
-        imu.linear_acceleration.x = imu.linear_acceleration.y = imu.linear_acceleration.z = 0.0
-        imu.linear_acceleration_covariance[0] = -1.0 # Standard way to mark covariance as unknown/unsupported
-
-        # simple small covariances – tune if desired
-        # These are placeholder values. For real systems, they come from sensor specs.
+        imu.header = odom.header
+        imu.orientation, imu.angular_velocity = odom.pose.pose.orientation, odom.twist.twist.angular
+        imu.linear_acceleration_covariance[0] = -1.0
         for i in (0, 4, 8):
             imu.orientation_covariance[i] = 1e-3
             imu.angular_velocity_covariance[i] = 1e-3
-
         self.pub_imu.publish(imu)
 
+        # Update distance and log based on distance interval
+        current_position = odom.pose.pose.position
+        if self.last_position is None:
+            self.last_position = current_position
+            
+        dx = current_position.x - self.last_position.x
+        dy = current_position.y - self.last_position.y
+        distance_increment = math.sqrt(dx**2 + dy**2)
+        self.total_distance += distance_increment
+
+        if self.total_distance >= self.next_log_distance:
+            self._log_data()
+            self.next_log_distance += self.log_distance_interval
+
+        self.last_position = current_position
+
     def publish_sensor_observations(self):
-        r"""
-        Waits until evaluation is enabled, then publishes current simulator
-        sensor readings. Requires to be called 1) after simulator reset and
-        2) when evaluation has been enabled.
-        """
-        # pack observations in ROS message
         observations_ros = self.obs_to_msgs(self.observations)
-        for sensor_uuid, _ in self.observations.items():
-            # we publish to each of RGB, Depth and Ptgoal/GPS+Compass sensor
+        for sensor_uuid, sensor_msg in observations_ros.items():
             if sensor_uuid == "rgb":
-                self.pub_rgb.publish(observations_ros["rgb"])
+                self.pub_rgb.publish(sensor_msg)
             elif sensor_uuid == "depth":
-                self.pub_depth.publish(observations_ros["depth"])
+                self.pub_depth.publish(sensor_msg)
                 if self.use_continuous_agent:
                     self.pub_camera_info.publish(
                         self.make_depth_camera_info_msg(
-                            observations_ros["depth"].header,
-                            observations_ros["depth"].height,
-                            observations_ros["depth"].width,
+                            sensor_msg.header, sensor_msg.height, sensor_msg.width
                         )
                     )
             elif sensor_uuid == "pointgoal_with_gps_compass":
-                self.pub_pointgoal_with_gps_compass.publish(
-                    observations_ros["pointgoal_with_gps_compass"]
-                )
-
+                self.pub_pointgoal_with_gps_compass.publish(sensor_msg)
         self._publish_gt_odom()
 
     def make_depth_camera_info_msg(self, header, height, width):
-        r"""
-        Create camera info message for depth camera.
-        :param header: header to create the message
-        :param height: height of depth image
-        :param width: width of depth image
-        :returns: camera info message of type CameraInfo.
-        """
-        # code modifed upon work by Bruce Cui
         camera_info_msg = CameraInfo()
         camera_info_msg.header = header
-        fx, fy = width / 2, height / 2
-        cx, cy = width / 2, height / 2
-
-        camera_info_msg.width = width
-        camera_info_msg.height = height
+        fx, fy = width / 2.0, height / 2.0
+        cx, cy = width / 2.0, height / 2.0
+        camera_info_msg.width, camera_info_msg.height = width, height
         camera_info_msg.distortion_model = "plumb_bob"
-        camera_info_msg.K = np.float32([fx, 0, cx, 0, fy, cy, 0, 0, 1])
-        camera_info_msg.D = np.float32([0, 0, 0, 0, 0])
+        camera_info_msg.K = [fx, 0, cx, 0, fy, cy, 0, 0, 1]
+        camera_info_msg.D = [0, 0, 0, 0, 0]
         camera_info_msg.P = [fx, 0, cx, 0, 0, fy, cy, 0, 0, 0, 1, 0]
         return camera_info_msg
 
     def step(self):
-        r"""
-        Enact a new command and update sensor observations.
-        Requires 1) being called only when evaluation has been enabled and
-        2) being called only from the main thread.
-        """
-        
         with self.command_cv:
-            # wait for new action before stepping
-
-            # while self.new_command_published is False:
-            #     self.command_cv.wait()
-            
             self.new_command_published = False
-
-            # enact the action / velocities
-            # ------------ log sim time start ------------
             t_sim_start = time.clock()
-            # --------------------------------------------
-
             if self.use_continuous_agent:
                 self.env.set_agent_velocities(self.linear_vel, self.angular_vel)
-                print(self.linear_vel)
                 (self.observations, _, _, info) = self.env.step()
             else:
-                # NOTE: Here we call HabitatEvalRLEnv.step() which dispatches
-                # to Env.step() or PhysicsEnv.step_physics() depending on
-                # whether physics has been enabled
                 (self.observations, _, _, info) = self.env.step(self.action)
-
-            # ------------  log sim time end  ------------
             t_sim_end = time.clock()
             with self.timing_lock:
                 self.t_sim_elapsed += t_sim_end - t_sim_start
-            # --------------------------------------------
 
-        # if making video, generate frames from actions
-        if self.make_video:
-            self.video_frame_counter += 1
-            if self.video_frame_counter == self.video_frame_period - 1:
-                # NOTE: for now we only consider the case where we make videos
-                # in the roam mode, for a continuous agent
-                out_im_per_action = observations_to_image_for_roam(
-                    self.observations,
-                    info,
-                    self.config.SIMULATOR.DEPTH_SENSOR.MAX_DEPTH,
-                )
-                self.observations_per_episode.append(out_im_per_action)
-                self.video_frame_counter = 0
-
+        if self.make_video and self.video_frame_counter % self.video_frame_period == 0:
+            out_im_per_action = observations_to_image_for_roam(
+                self.observations, info, self.config.SIMULATOR.DEPTH_SENSOR.MAX_DEPTH
+            )
+            self.observations_per_episode.append(out_im_per_action)
+        self.video_frame_counter += 1
         with self.command_cv:
             self.count_steps += 1
 
     def publish_and_step_for_eval(self):
-        r"""
-        Complete an episode and alert eval_episode() upon completion. Requires
-        to be called after simulator reset.
-        """
-        # publish observations at fixed rate
         r = rospy.Rate(self.pub_rate)
         with self.enable_eval_cv:
-            # wait for evaluation to be enabled
             while self.enable_eval is False:
                 self.enable_eval_cv.wait()
-
-            # publish observations and step until the episode ends
             while not self.env._env.episode_over:
                 self.publish_sensor_observations()
                 self.step()
                 r.sleep()
-
-            # now the episode is done, disable evaluation and alert eval_episode()
             self.enable_eval = False
             self.enable_eval_cv.notify()
 
     def publish_and_step_for_roam(self):
-        r"""
-        Let an agent roam within a scene until shutdown. Requires to be called
-        1) after simulator reset, 2) shutdown_lock has not yet been acquired by
-        the current thread.
-        """
-        # publish observations at fixed rate
         r = rospy.Rate(self.pub_rate)
         with self.enable_eval_cv:
-            # wait for evaluation to be enabled
             while self.enable_eval is False:
                 self.enable_eval_cv.wait()
+            
+            with self.timing_lock:
+                if self.start_time is None:
+                    self.start_time = rospy.Time.now()
 
-            # publish observations and step until shutdown
             while True:
                 with self.shutdown_lock:
                     if self.shutdown:
@@ -876,71 +616,53 @@ class HabitatEnvNode:
                 self.publish_sensor_observations()
                 self.step()
                 r.sleep()
-
-            # disable evaluation
             self.enable_eval = False
+    
+    def _log_data(self):
+        exploration_percentage = self.get_exploration_percentage()
+        if exploration_percentage is None:
+            return
+        try:
+            with open(self.data_log_filepath, 'a') as f:
+                f.write(f"{self.total_distance:.4f}, {exploration_percentage:.4f}\n")
+            rospy.loginfo(f"Logged: Distance={self.total_distance:.2f}m, Exploration={exploration_percentage:.2f}%")
+        except IOError as e:
+            rospy.logerr(f"Could not write to data log file: {e}")
+
+    def get_exploration_percentage(self):
+        try:
+            top_down_map_measure = self.env._env._task.measurements.measures.get("top_down_map_for_roam")
+            if top_down_map_measure and hasattr(top_down_map_measure, 'get_clean_map'):
+                clean_map_data = top_down_map_measure.get_clean_map()
+                if clean_map_data is not None:
+                    clean_map_image = create_clean_map_image(clean_map_data)
+                    temp_map_path = os.path.join(self.home_dir, "temp_map_for_analysis.png")
+                    cv2.imwrite(temp_map_path, cv2.cvtColor(clean_map_image, cv2.COLOR_RGB2BGR))
+                    return self.analyze_map_coverage(temp_map_path)
+            return None
+        except Exception as e:
+            rospy.logerr(f"Error getting exploration percentage: {e}")
+            return None
 
     def callback(self, cmd_msg):
-        r"""
-        Takes in a command from an agent and alert the simulator to enact
-        it.
-        :param cmd_msg: Either a velocity command or an action command.
-        """
         if self.use_continuous_agent:
             if isinstance(cmd_msg, Twist):
-                # Store the commanded linear and angular velocities
-                self.current_cmd_vx = cmd_msg.linear.x
-                self.current_cmd_vy = cmd_msg.linear.y
-                self.current_cmd_vz = cmd_msg.linear.z
-                self.current_cmd_wx = cmd_msg.angular.x
-                self.current_cmd_wy = cmd_msg.angular.y
-                self.current_cmd_wz = cmd_msg.angular.z
-                # rospy.loginfo(f"Callback received Twist: vx={self.current_cmd_vx:.2f}, wz={self.current_cmd_wz:.2f}") # Uncomment for debugging
-            else:
-                rospy.logwarn("Expected Twist message for continuous agent, but received different type.")
-                # You might want to reset velocities if an unexpected message comes in
-                self.current_cmd_vx = 0.0
-                self.current_cmd_vy = 0.0
-                self.current_cmd_vz = 0.0
-                self.current_cmd_wx = 0.0
-                self.current_cmd_wy = 0.0
-                self.current_cmd_wz = 0.0
-        else:
-            # Handle discrete action, if applicable
-            # Your existing logic for Int16 actions goes here
-            pass
-
-        # unpack agent action from ROS message, and send the action
-        # to the simulator
-        with self.command_cv:
-            if self.use_continuous_agent:
-                # set linear + angular velocity
-                self.linear_vel = np.array(
-                    [(1.0 * cmd_msg.linear.y), 0.0, (-1.0 * cmd_msg.linear.x)]
-                )
+                self.linear_vel = np.array([cmd_msg.linear.y, 0.0, -cmd_msg.linear.x])
                 self.angular_vel = np.array([0.0, cmd_msg.angular.z, 0.0])
             else:
-                # get the action
-                self.action = cmd_msg.data
+                rospy.logwarn("Expected Twist message for continuous agent.")
+        else:
+            self.action = cmd_msg.data
 
-            # set action publish flag and notify
+        with self.command_cv:
             self.new_command_published = True
             self.command_cv.notify()
 
     def simulate(self):
-        r"""
-        An infinite loop where the env node 1) keeps evaluating the next
-        episode in its RL environment, if an EvalEpisode request is given;
-        or 2) let the agent roam freely in one episode.
-        Breaks upon receiving shutdown command.
-        """
-        # iterate over episodes
         while True:
             try:
-                # reset the env
                 self.reset()
                 with self.shutdown_lock:
-                    # if shutdown service called, exit
                     if self.shutdown:
                         rospy.signal_shutdown("received request to shut down")
                         break
@@ -948,11 +670,8 @@ class HabitatEnvNode:
                     if self.enable_roam:
                         self.publish_and_step_for_roam()
                     else:
-                        # otherwise, evaluate the episode
                         self.publish_and_step_for_eval()
             except StopIteration:
-                # set enable_reset and enable_eval to False, so the
-                # env node can evaluate again in the future
                 with self.enable_reset_cv:
                     self.enable_reset = False
                 with self.enable_eval_cv:
@@ -962,184 +681,141 @@ class HabitatEnvNode:
                     self.enable_eval_cv.notify()
 
     def analyze_map_coverage(self, image_path):
-        """
-        Loads a clean exploration map and calculates the percentage of explored space
-        using predefined, exact color values.
-
-        Args:
-            image_path (str): The path to the input map image file.
-        """
-        # --- 1. Load the Image ---
         if not os.path.exists(image_path):
-            print(f"Error: Image file not found at '{image_path}'")
-            return
-
+            rospy.logerr(f"Error: Image file not found at '{image_path}'")
+            return None
         map_image = cv2.imread(image_path)
         if map_image is None:
-            print(f"Error: Could not read the image file. It may be corrupted or in an unsupported format.")
-            return
-
-        # --- 2. Define Exact Color Values (in BGR format) ---
-        # IMPORTANT: Replace these with the exact BGR values you have identified.
-        # BGR is (Blue, Green, Red).
-        # For example, if your seen color is RGB(128, 128, 128), the BGR value is (128, 128, 128).
-        # If your unseen color is RGB(105, 105, 105), the BGR value is (105, 105, 105).
-        SEEN_COLOR_BGR = np.array([150, 150, 150])  # CHANGE THIS - The light gray color for explored areas
-        UNSEEN_COLOR_BGR = np.array([75, 75, 75]) # CHANGE THIS - The dark gray color for unexplored areas
-
-        # --- 3. Create Masks and Count Pixels ---
-        # Create a mask for each color. This will be True where the pixel color matches exactly.
+            rospy.logerr(f"Error: Could not read the image file at '{image_path}'.")
+            return None
+        SEEN_COLOR_BGR = np.array([150, 150, 150])
+        UNSEEN_COLOR_BGR = np.array([75, 75, 75])
         mask_seen = np.all(map_image == SEEN_COLOR_BGR, axis=-1)
         mask_unseen = np.all(map_image == UNSEEN_COLOR_BGR, axis=-1)
-
-        # Count the number of True values in each mask
         seen_pixels = np.count_nonzero(mask_seen)
         unseen_pixels = np.count_nonzero(mask_unseen)
-
-        print("--- Pixel Counts ---")
-        print(f"Seen (Color: {SEEN_COLOR_BGR}):      {seen_pixels} pixels")
-        print(f"Unseen (Color: {UNSEEN_COLOR_BGR}):    {unseen_pixels} pixels")
-        print("-" * 22)
-
-        # --- 4. Calculate Exploration Percentage ---
         total_explorable_pixels = seen_pixels + unseen_pixels
+        return (seen_pixels / total_explorable_pixels) * 100 if total_explorable_pixels > 0 else 0.0
 
-        if total_explorable_pixels == 0:
-            print("Could not find any explorable (seen or unseen) pixels.")
-            print("Please verify the BGR color values in the script.")
-            exploration_percentage = 0.0
-        else:
-            exploration_percentage = (seen_pixels / total_explorable_pixels) * 100
+    def _save_summary_files(self):
+        """Saves the final summary files for time, distance, and exploration."""
+        rospy.loginfo("Saving final summary files...")
+        try:
+            # 1. Save Total Time
+            with self.timing_lock:
+                if self.start_time:
+                    total_time = (rospy.Time.now() - self.start_time).to_sec()
+                    time_filepath = os.path.join(self.home_dir, "total_time_hab.txt")
+                    with open(time_filepath, "w") as f:
+                        f.write(f"{total_time:.2f}\n")
+                    rospy.loginfo(f"Total time saved to {time_filepath}")
 
-        print("\n--- Coverage Calculation ---")
-        print(f"Formula: (Seen Pixels) / (Seen Pixels + Unseen Pixels)")
-        print(f"Calculation: {seen_pixels} / ({seen_pixels} + {unseen_pixels})")
-        print(f"Exploration Percentage: {exploration_percentage:.2f}%")
+            # 2. Save Total Distance
+            distance_filepath = os.path.join(self.home_dir, "total_distance.txt")
+            with open(distance_filepath, "w") as f:
+                f.write(f"{self.total_distance:.4f}\n")
+            rospy.loginfo(f"Total distance saved to {distance_filepath}")
 
-        return exploration_percentage
+            # 3. Save Final Exploration Percentage
+            final_percentage = self.get_exploration_percentage()
+            if final_percentage is not None:
+                percent_filepath = os.path.join(self.home_dir, "total_seen_percent.txt")
+                with open(percent_filepath, "w") as f:
+                    f.write(f"{final_percentage:.4f}\n")
+                rospy.loginfo(f"Final exploration percentage saved to {percent_filepath}")
+
+        except Exception as e:
+            rospy.logerr(f"Failed to save summary files: {e}")
 
     def on_exit_generate_video(self):
-        r"""
-        Make video of the current episode and calculate exploration percentage.
-        """
-
-        experiment_name = "PX4nDJXEHrG"
-        home_dir = f"/home/aarush/final_gemini_results/{experiment_name}"
-        #home_dir = f"/home/aarush/final_explore_lite_results/{experiment_name}"
-        #home_dir = f"/home/aarush/final_rrt_results/{experiment_name}"
-        #home_dir = f"/home/aarush/final_opencv_results/{experiment_name}"
-
-        rospy.loginfo("Saving final exploration map image...")
-        try:
-            # Check if any frames were generated
-            if self.observations_per_episode:
-                # The last frame in the list is the final view
-                final_frame = self.observations_per_episode[-1]
-                
-                # Define a path in the user's home directory
-                filename = f"final_exploration_map_{int(time.time())}.png"
-                file_path = os.path.join(home_dir, filename)
-                
-                # Save the image using OpenCV
-                # The images are in RGB format, so we convert to BGR for cv2.imwrite
-                cv2.imwrite(file_path, cv2.cvtColor(final_frame, cv2.COLOR_RGB2BGR))
-                rospy.loginfo(f"Final map image saved to {file_path}")
-            else:
-                rospy.logwarn("No frames were recorded, cannot save final map image.")
-        except Exception as e:
-            rospy.logerr(f"An error occurred while saving the final map image: {e}")
-        # --- END OF NEW CODE ---
-
-
-        # --- START OF NEW ADDITIVE CODE ---
-        rospy.loginfo("Saving clean final exploration map...")
-        try:
-            # Access the top down map measure from the environment's task
-            top_down_map_measure = self.env._env._task.measurements.measures.get(
-                "top_down_map_for_roam"
-            )
-            
-            if top_down_map_measure and hasattr(top_down_map_measure, 'get_clean_map'):
-                # Get the raw, clean map data using the new method
-                clean_map_data = top_down_map_measure.get_clean_map()
-                
-                if clean_map_data is not None:
-                    # Generate the colorized image using the new utility function
-                    clean_map_image = create_clean_map_image(clean_map_data)
-                    
-                    # Define a new path for the clean map
-                    filename = f"final_clean_exploration_map_{int(time.time())}.png"
-                    file_path = os.path.join(home_dir, filename)
-                    
-                    # Save the clean image
-                    cv2.imwrite(file_path, cv2.cvtColor(clean_map_image, cv2.COLOR_RGB2BGR))
-                    rospy.loginfo(f"Clean map image saved to {file_path}")
-
-                    exploration_percentage = self.analyze_map_coverage(file_path)
-
-                    percent_filename = "total_seen_percent.txt"
-                    percent_filepath = os.path.join(home_dir, percent_filename)
-                    with open(percent_filepath, "w") as f:
-                        f.write(f"{exploration_percentage:.2f}\n")
-                    rospy.loginfo(f"Exploration percentage saved to {percent_filepath}")
-            else:
-                rospy.logwarn(
-                    "Could not find 'top_down_map_for_roam' measure or 'get_clean_map' method."
-                )
-
-        except Exception as e:
-            rospy.logerr(f"An error occurred while saving the clean map image: {e}")
-        # --- END OF NEW ADDITIVE CODE ---
-
+        rospy.loginfo("Executing shutdown sequence...")
+        self.save_final_maps()
+        self.generate_plot()
+        self._save_summary_files() # Dump summary files
         if self.make_video:
             generate_video(
                 video_option=self.config.VIDEO_OPTION,
                 video_dir=self.config.VIDEO_DIR,
                 images=self.observations_per_episode,
-                episode_id="fake_episode_id",
-                scene_id="fake_scene_id",
+                episode_id="roam_episode",
+                scene_id=self.scene_id_last if self.scene_id_last else "unknown",
                 agent_seed=0,
                 checkpoint_idx=0,
                 metrics={},
                 tb_writer=None,
             )
+        rospy.loginfo("Shutdown sequence complete.")
 
-    # def on_exit_generate_video(self):
-    #     r"""
-    #     Make video of the current episode, if video production is turned
-    #     on.
-    #     """
-    #     if self.make_video:
-    #         generate_video(
-    #             video_option=self.config.VIDEO_OPTION,
-    #             video_dir=self.config.VIDEO_DIR,
-    #             images=self.observations_per_episode,
-    #             episode_id="fake_episode_id",
-    #             scene_id="fake_scene_id",
-    #             agent_seed=0,
-    #             checkpoint_idx=0,
-    #             metrics={},
-    #             tb_writer=None,
-    #         )
+    def save_final_maps(self):
+        rospy.loginfo("Saving final exploration map images...")
+        try:
+            if self.observations_per_episode:
+                final_frame = self.observations_per_episode[-1]
+                filename = f"final_rendered_map_{int(time.time())}.png"
+                file_path = os.path.join(self.home_dir, filename)
+                cv2.imwrite(file_path, cv2.cvtColor(final_frame, cv2.COLOR_RGB2BGR))
+                rospy.loginfo(f"Final rendered map saved to {file_path}")
+
+            top_down_map_measure = self.env._env._task.measurements.measures.get("top_down_map_for_roam")
+            if top_down_map_measure and hasattr(top_down_map_measure, 'get_clean_map'):
+                clean_map_data = top_down_map_measure.get_clean_map()
+                if clean_map_data is not None:
+                    clean_map_image = create_clean_map_image(clean_map_data)
+                    filename = f"final_clean_map_{int(time.time())}.png"
+                    file_path = os.path.join(self.home_dir, filename)
+                    cv2.imwrite(file_path, cv2.cvtColor(clean_map_image, cv2.COLOR_RGB2BGR))
+                    rospy.loginfo(f"Final clean map saved to {file_path}")
+        except Exception as e:
+            rospy.logerr(f"Error saving final map images: {e}")
+            
+    def generate_plot(self):
+        rospy.loginfo("Generating exploration vs. distance plot...")
+        try:
+            if not os.path.exists(self.data_log_filepath):
+                rospy.logwarn(f"Log file not found at {self.data_log_filepath}, skipping plot generation.")
+                return
+                
+            distances, percentages = [], []
+            with open(self.data_log_filepath, 'r') as f:
+                next(f)
+                for line in f:
+                    parts = line.strip().split(',')
+                    if len(parts) == 2:
+                        distances.append(float(parts[0]))
+                        percentages.append(float(parts[1]))
+
+            if not distances or not percentages:
+                rospy.logwarn("No data to plot.")
+                return
+
+            plt.figure(figsize=(10, 6))
+            plt.plot(distances, percentages, marker='.', linestyle='-')
+            plt.title('Exploration Progress')
+            plt.xlabel('Distance Traveled (m)')
+            plt.ylabel('Exploration Percentage (%)')
+            plt.grid(True)
+            plt.ylim(0, 100)
+            plt.xlim(left=0)
+            
+            plot_filename = f"exploration_vs_distance_{int(time.time())}.png"
+            plot_filepath = os.path.join(self.home_dir, plot_filename)
+            plt.savefig(plot_filepath)
+            rospy.loginfo(f"Plot saved to {plot_filepath}")
+            plt.close()
+
+        except Exception as e:
+            rospy.logerr(f"Failed to generate plot: {e}")
 
 
 def main():
-    # parse input arguments
     parser = argparse.ArgumentParser()
     parser.add_argument("--node-name", type=str, default="env_node")
-    parser.add_argument(
-        "--task-config", type=str, default="configs/pointnav_d_orignal.yaml"
-    )
+    parser.add_argument("--task-config", type=str, default="configs/pointnav_d_orignal.yaml")
     parser.add_argument("--enable-physics-sim", default=False, action="store_true")
     parser.add_argument("--use-continuous-agent", default=False, action="store_true")
-    parser.add_argument(
-        "--sensor-pub-rate",
-        type=float,
-        default=20.0,
-    )
+    parser.add_argument("--sensor-pub-rate", type=float, default=20.0)
     args = parser.parse_args()
 
-    # initialize the env node
     env_node = HabitatEnvNode(
         node_name=args.node_name,
         config_paths=args.task_config,
@@ -1147,8 +823,6 @@ def main():
         use_continuous_agent=args.use_continuous_agent,
         pub_rate=args.sensor_pub_rate,
     )
-
-    # run simulations
     env_node.simulate()
 
 

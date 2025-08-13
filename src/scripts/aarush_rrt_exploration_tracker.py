@@ -6,7 +6,6 @@ import cv2
 import numpy as np
 from pathlib import Path
 
-# --- MODIFICATION: Import actionlib and MoveBaseAction ---
 import actionlib
 from move_base_msgs.msg import MoveBaseAction, MoveBaseActionGoal
 
@@ -21,8 +20,7 @@ class ExplorationTracker:
     It tracks:
     1. The sequence of goal points chosen by the assigner.
     2. The full trajectory of the robot.
-    3. The total distance traveled and time taken.
-    4. Overlays the trajectory onto the map at regular intervals and at the end.
+    3. Overlays the trajectory onto the map at regular intervals and at the end.
     """
     def __init__(self):
         """Initializes the node, subscribers, and tracking variables."""
@@ -38,15 +36,13 @@ class ExplorationTracker:
         # --- State and Data Variables ---
         self.goal_points = []
         self.trajectory_points = []
-        self.total_distance = 0.0
-        self.start_time = None
         self.exploration_finished = False
         self.map_msg = None
         self.save_counter = 0
         self.last_pose = None
         self.last_movement_time = None
 
-        # --- MODIFICATION: Add a client to control move_base ---
+        # --- Client to control move_base ---
         self.move_base_client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
         rospy.loginfo("Tracker connecting to move_base action server...")
         if not self.move_base_client.wait_for_server(rospy.Duration(10.0)):
@@ -85,7 +81,7 @@ class ExplorationTracker:
 
     def timed_map_save_callback(self, event):
         """Periodically saves a map overlay image based on a timer."""
-        if self.exploration_finished or self.start_time is None:
+        if self.exploration_finished:
             return
 
         self.save_counter += 1
@@ -98,9 +94,7 @@ class ExplorationTracker:
         if self.exploration_finished:
             return
 
-        if self.start_time is None:
-            self.start_time = rospy.Time.now()
-            rospy.loginfo("First odom message received. Starting exploration timer.")
+        if self.last_movement_time is None:
             self.last_movement_time = rospy.Time.now()
 
         current_pose = msg.pose.pose
@@ -110,8 +104,6 @@ class ExplorationTracker:
             dx = current_pose.position.x - self.last_pose.position.x
             dy = current_pose.position.y - self.last_pose.position.y
             distance_moved = math.sqrt(dx**2 + dy**2)
-
-            self.total_distance += distance_moved
 
             if distance_moved > self.movement_threshold:
                 self.last_movement_time = rospy.Time.now()
@@ -124,13 +116,11 @@ class ExplorationTracker:
         Periodically checks for exploration completion.
         If completed, continually cancels all move_base goals.
         """
-        # --- MODIFICATION: New logic to continually cancel goals after completion ---
         if self.exploration_finished:
             self.move_base_client.cancel_all_goals()
             rospy.loginfo_throttle(5, "Exploration finished. Continually canceling any active goals.")
             return
 
-        # --- Original completion check logic ---
         if self.last_movement_time is None:
             return
 
@@ -141,8 +131,6 @@ class ExplorationTracker:
             rospy.loginfo(f"Completion timeout of {self.completion_timeout}s reached. Robot has not moved.")
             self.exploration_finished = True
             self.print_and_save_summary()
-            # --- MODIFICATION: Do not shut down the node, let it keep running to cancel goals ---
-            # rospy.signal_shutdown("Exploration complete: Robot stationary for timeout period.")
 
     def generate_map_overlay(self, filename):
         """Generates and saves an image of the map with trajectory and goals."""
@@ -217,23 +205,11 @@ class ExplorationTracker:
         rospy.loginfo("EXPLORATION RUN SUMMARY")
         rospy.loginfo("="*40)
         
-        total_time = (rospy.Time.now() - self.start_time).to_sec() if self.start_time else 0.0
-        rospy.loginfo(f"Total Exploration Time: {total_time:.2f} seconds")
-        rospy.loginfo(f"Total Distance Traveled: {self.total_distance:.2f} meters")
         rospy.loginfo(f"Number of Goal Points: {len(self.goal_points)}")
         rospy.loginfo("--- Goal Points (x, y) ---")
         for i, point in enumerate(self.goal_points):
             rospy.loginfo(f"  {i+1}: ({point[0]:.2f}, {point[1]:.2f})")
         rospy.loginfo("="*40)
-
-        try:
-            output_dir = Path(self.output_folder)
-            output_dir.mkdir(exist_ok=True)
-            (output_dir / "total_time.txt").write_text(f"{total_time:.2f}\n")
-            (output_dir / "total_distance.txt").write_text(f"{self.total_distance:.2f}\n")
-            rospy.loginfo(f"Summary metrics saved to {output_dir}")
-        except Exception as e:
-            rospy.logerr(f"Failed to save summary files: {e}")
 
 if __name__ == '__main__':
     try:

@@ -104,5 +104,5 @@
       <!-- <rosparam file="$(find ros_x_habitat)/navigation_params/global_planner_params.yaml" command="load" /> -->
   </node>
 
-  <node pkg="ros_x_habitat" type="distance_tracker.py" name="distance_tracker" output="screen" />
+  <!-- <node pkg="ros_x_habitat" type="distance_tracker.py" name="distance_tracker" output="screen" /> -->
 </launch>
