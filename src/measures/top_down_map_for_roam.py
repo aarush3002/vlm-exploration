@@ -280,7 +280,10 @@ class TopDownMapForRoam(Measure):
                 self._fog_of_war_mask,
                 agent_position,
                 self.get_polar_angle(),
-                fov=self._config.FOG_OF_WAR.FOV,
+                # fov=self._config.FOG_OF_WAR.FOV,
+                # max_line_len=self._config.FOG_OF_WAR.VISIBILITY_DIST
+                # / maps.calculate_meters_per_pixel(self._map_resolution, sim=self._sim),
+                fov=360,
                 max_line_len=self._config.FOG_OF_WAR.VISIBILITY_DIST
                 / maps.calculate_meters_per_pixel(self._map_resolution, sim=self._sim),
             )

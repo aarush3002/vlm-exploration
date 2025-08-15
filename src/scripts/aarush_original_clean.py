@@ -34,7 +34,7 @@ from aarush_graph_stuff import Graph, Vertex, euclidean_dist
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 VISION_MODEL = "gemini-2.5-pro"
 chat = None
-experiment_name = "S9hNv5qa7GM"
+experiment_name = "2n8kARJN3HM"
 
 def new_chat():
     """Creates a new Gemini chat session."""

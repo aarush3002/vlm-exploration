@@ -11,6 +11,8 @@ SIMULATOR:
   DEPTH_SENSOR:
     WIDTH: 256
     HEIGHT: 256
+    MIN_DEPTH: 0.05          # example
+    MAX_DEPTH: 130.0
 TASK:
   TYPE: Nav-v0
   SUCCESS_DISTANCE: 0.2

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr//bin/env python
 import argparse
 from threading import Condition, Lock
 
@@ -43,7 +43,7 @@ from tf.transformations import (
 )
 
 import math
-from sensor_msgs.msg import Imu 
+from sensor_msgs.msg import Imu
 
 import os
 import cv2
@@ -214,11 +214,11 @@ class HabitatEnvNode:
                 PointGoalWithGPSCompass,
                 queue_size=self.pub_queue_size
             )
-        
+
         self.pub_odom   = rospy.Publisher("odom", Odometry, queue_size=self.pub_queue_size)
         self.pub_imu  = rospy.Publisher("imu/data", Imu,  queue_size=self.pub_queue_size)
         self.clock_pub = rospy.Publisher('/clock', Clock, queue_size=10)
-        self.tf_br      = tf2_ros.TransformBroadcaster()   
+        self.tf_br      = tf2_ros.TransformBroadcaster()
 
         # subscribe from command topics
         if self.use_continuous_agent:
@@ -229,26 +229,43 @@ class HabitatEnvNode:
             self.sub = rospy.Subscriber(
                 "action", Int16, self.callback, queue_size=self.sub_queue_size
             )
-        
+
         # Distance and logging variables
         self.last_position = None
         self.total_distance = 0.0
         self.log_distance_interval = 0.5
         self.next_log_distance = 0.0
-        
-        experiment_name = "JmbYfDe2QKZ"
-        #self.home_dir = f"/home/aarush/final_gemini_results/{experiment_name}"
+        self.trajectory_log_distance_interval = 0.2 # meters
+        self.next_trajectory_log_distance = 0.0
+
+        experiment_name = "2n8kARJN3HM" #2t7WUuJeko7
+        self.home_dir = f"/home/aarush/final_gemini_results/{experiment_name}"
         # self.home_dir = f"/home/aarush/final_explore_lite_results/{experiment_name}"
         #self.home_dir = f"/home/aarush/final_opencv_results/{experiment_name}"
-        #self.home_dir = f"/home/aarush/final_tare_results/{experiment_name}"
-        self.home_dir = f"/home/aarush/final_dsv_results/{experiment_name}"
+        # self.home_dir = f"/home/aarush/final_tare_results/{experiment_name}"
+        #self.home_dir = f"/home/aarush/final_tare90FOV_results/{experiment_name}"
+        # self.home_dir = f"/home/aarush/final_dsv_results/{experiment_name}"
+        # self.home_dir = f"/home/aarush/final_human_results/{experiment_name}"
         self.data_log_filepath = os.path.join(self.home_dir, "distance_vs_exploration.txt")
+        self.trajectory_log_filepath = os.path.join(self.home_dir, "total_trajectory.txt")
+
+        # Add variables for periodic frame saving
+        self.video_frames_dir = os.path.join(self.home_dir, "video_frames")
+        self.last_frame_save_time = None
+        self.frame_save_interval = 10.0  # seconds
 
         # Ensure output directory exists and create the log file
         try:
             os.makedirs(self.home_dir, exist_ok=True)
+            os.makedirs(self.video_frames_dir, exist_ok=True)
             with open(self.data_log_filepath, 'w') as f:
                 f.write("# Distance(m), Exploration(%)\n")
+            # MODIFICATION: The header for trajectory.txt is no longer written.
+            # An empty file will be created on the first write operation if it doesn't exist.
+            # To ensure it's cleared on a new run, we open it in write mode here.
+            with open(self.trajectory_log_filepath, 'w') as f:
+                pass
+
         except OSError as e:
             rospy.logerr(f"Could not create output directory or file: {e}")
 
@@ -307,38 +324,14 @@ class HabitatEnvNode:
             with self.timing_lock:
                 self.t_reset_elapsed += t_reset_end - t_reset_start
 
-            # ================================================================== #
-            # === START: ADD THIS CODE TO FORCE A (0,0,0) STARTING POSE ======== #
-            # ================================================================== #
-
-            # Define the desired starting position [x, y, z] and orientation (as a quaternion)
-            # NOTE: In Habitat's coordinate system, Y is the vertical axis.
-            # start_position = np.array([0.0, 0.0, 0.0], dtype=np.float32)
-            # start_rotation = quaternion.from_euler_angles(np.array([0.0, -math.pi / 2, 0.0])) # 0 Yaw
-
-            # # Get the agent and create a new state object
-            # agent = self.env._env._sim.get_agent(0)
-            # new_state = AgentState(position=start_position, rotation=start_rotation)
-
-            # # Set the agent's state to the new starting pose
-            # agent.set_state(new_state)
-
-            # # Refresh observations from the new pose
-            # self.observations = self.env._env._sim.get_sensor_observations()
-
-            # self.logger.info("Agent start pose has been manually set to (0, 0, 0) with 0 yaw.")
-
-            # ================================================================== #
-            # === END: ADDED CODE ============================================== #
-            # ================================================================== #
-
             with self.command_cv:
                 self.count_steps = 0
-            
+
             # Reset distance tracking and log initial state
             self.total_distance = 0.0
             self.last_position = None
             self.next_log_distance = 0.0
+            self.next_trajectory_log_distance = 0.0
             self._log_data()
             self.next_log_distance += self.log_distance_interval
 
@@ -421,11 +414,9 @@ class HabitatEnvNode:
     def cv2_to_depthmsg(self, depth_img: np.ndarray):
         if self.use_continuous_agent:
             assert self.config.SIMULATOR.DEPTH_SENSOR.NORMALIZE_DEPTH is False
-            # depth_img_in_m = np.squeeze(depth_img, axis=2)
             if depth_img.ndim == 3:
                 depth_img_in_m = np.squeeze(depth_img, axis=2)
             else:
-                # If it's already 2D (H, W), use it directly
                 depth_img_in_m = depth_img
             depth_msg = CvBridge().cv2_to_imgmsg(
                 depth_img_in_m.astype(np.float32), encoding="passthrough"
@@ -443,9 +434,6 @@ class HabitatEnvNode:
 
         for sensor_uuid, sensor_data in observations_hab.items():
             if sensor_uuid == "rgb":
-                # sensor_msg = CvBridge().cv2_to_imgmsg(
-                #     sensor_data.astype(np.uint8), encoding="rgb8"
-                # )
                 rgb_image = cv2.cvtColor(sensor_data, cv2.COLOR_RGBA2RGB)
                 sensor_msg = CvBridge().cv2_to_imgmsg(
                     rgb_image.astype(np.uint8), encoding="rgb8"
@@ -461,11 +449,11 @@ class HabitatEnvNode:
 
             h = Header()
             h.stamp = t_curr
-            h.frame_id = "laser" 
+            h.frame_id = "laser"
             sensor_msg.header = h
             observations_ros[sensor_uuid] = sensor_msg
         return observations_ros
-    
+
     def _publish_gt_odom(self):
         st = self.env._env._sim.get_agent_state()
         odom = Odometry()
@@ -486,7 +474,7 @@ class HabitatEnvNode:
         q_ros = quaternion_multiply(q_hab_to_ros_basis, q_h)
         _, _, yaw = euler_from_quaternion(q_ros, axes="sxyz")
         q_flat = quaternion_from_euler(0.0, 0.0, -yaw)
-        
+
         odom.pose.pose.orientation.x = q_flat[0]
         odom.pose.pose.orientation.y = q_flat[1]
         odom.pose.pose.orientation.z = q_flat[2]
@@ -524,7 +512,7 @@ class HabitatEnvNode:
         current_position = odom.pose.pose.position
         if self.last_position is None:
             self.last_position = current_position
-            
+
         dx = current_position.x - self.last_position.x
         dy = current_position.y - self.last_position.y
         distance_increment = math.sqrt(dx**2 + dy**2)
@@ -535,6 +523,42 @@ class HabitatEnvNode:
             self.next_log_distance += self.log_distance_interval
 
         self.last_position = current_position
+
+        # Log the trajectory pose only after moving a certain distance
+        if self.total_distance >= self.next_trajectory_log_distance:
+            self._log_trajectory(odom, q_flat)
+            self.next_trajectory_log_distance += self.trajectory_log_distance_interval
+
+    def _log_trajectory(self, odom_msg, quaternion_msg):
+        """Logs the agent's pose and elapsed time to a file."""
+        try:
+            # Calculate elapsed time
+            elapsed_time = 0.0
+            with self.timing_lock:
+                if self.start_time:
+                    elapsed_time = (rospy.Time.now() - self.start_time).to_sec()
+
+            # Get position
+            pos = odom_msg.pose.pose.position
+
+            # Convert quaternion to Euler angles
+            (roll, pitch, yaw) = euler_from_quaternion(quaternion_msg)
+
+            # MODIFICATION: Format the data string with spaces and specific precision.
+            log_line = (
+                f"{pos.x:.6f} {pos.y:.6f} {pos.z:.6f} "
+                f"{roll:.6f} {pitch:.6f} {yaw:.6f} {elapsed_time:.6f}\n"
+            )
+
+
+            # Append to the log file
+            with open(self.trajectory_log_filepath, 'a') as f:
+                f.write(log_line)
+
+        except IOError as e:
+            rospy.logerr(f"Could not write to trajectory log file: {e}")
+        except Exception as e:
+            rospy.logerr(f"An error occurred during trajectory logging: {e}")
 
     def publish_sensor_observations(self):
         observations_ros = self.obs_to_msgs(self.observations)
@@ -604,10 +628,12 @@ class HabitatEnvNode:
         with self.enable_eval_cv:
             while self.enable_eval is False:
                 self.enable_eval_cv.wait()
-            
+
             with self.timing_lock:
                 if self.start_time is None:
                     self.start_time = rospy.Time.now()
+
+            self.last_frame_save_time = rospy.Time.now()
 
             while True:
                 with self.shutdown_lock:
@@ -615,9 +641,24 @@ class HabitatEnvNode:
                         break
                 self.publish_sensor_observations()
                 self.step()
+
+                current_time = rospy.Time.now()
+                if (current_time - self.last_frame_save_time).to_sec() >= self.frame_save_interval:
+                    rospy.loginfo(f"Saving a video frame ({self.frame_save_interval}s interval reached)...")
+                    try:
+                        if self.observations_per_episode:
+                            current_frame = self.observations_per_episode[-1]
+                            filename = f"frame_{int(current_time.to_sec())}.png"
+                            file_path = os.path.join(self.video_frames_dir, filename)
+                            cv2.imwrite(file_path, cv2.cvtColor(current_frame, cv2.COLOR_RGB2BGR))
+                            rospy.loginfo(f"Successfully saved frame to {file_path}")
+                            self.last_frame_save_time = current_time
+                    except Exception as e:
+                        rospy.logerr(f"Could not save periodic video frame: {e}")
+
                 r.sleep()
             self.enable_eval = False
-    
+
     def _log_data(self):
         exploration_percentage = self.get_exploration_percentage()
         if exploration_percentage is None:
@@ -767,14 +808,14 @@ class HabitatEnvNode:
                     rospy.loginfo(f"Final clean map saved to {file_path}")
         except Exception as e:
             rospy.logerr(f"Error saving final map images: {e}")
-            
+
     def generate_plot(self):
         rospy.loginfo("Generating exploration vs. distance plot...")
         try:
             if not os.path.exists(self.data_log_filepath):
                 rospy.logwarn(f"Log file not found at {self.data_log_filepath}, skipping plot generation.")
                 return
-                
+
             distances, percentages = [], []
             with open(self.data_log_filepath, 'r') as f:
                 next(f)
@@ -796,7 +837,7 @@ class HabitatEnvNode:
             plt.grid(True)
             plt.ylim(0, 100)
             plt.xlim(left=0)
-            
+
             plot_filename = f"exploration_vs_distance_{int(time.time())}.png"
             plot_filepath = os.path.join(self.home_dir, plot_filename)
             plt.savefig(plot_filepath)
