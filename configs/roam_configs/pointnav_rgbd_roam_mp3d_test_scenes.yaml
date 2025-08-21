@@ -43,7 +43,7 @@ DATASET:
   TYPE: PointNav-v1
   # SPLIT: test
   # DATA_PATH: data/datasets/pointnav/mp3d/v1/{split}/{split}.json.gz
-  SPLIT: 2n8kARJN3HM #JmbYfDe2QKZ #29hnd4uzFmX
+  SPLIT: 29hnd4uzFmX #8WUmhLawc2A #S9hNv5qa7GM #2n8kARJN3HM #JmbYfDe2QKZ #29hnd4uzFmX
   DATA_PATH: data/datasets/pointnav/mp3d/v1/train/content/{split}.json.gz
 
 VIDEO_OPTION: ["disk"]

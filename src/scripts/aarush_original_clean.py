@@ -34,7 +34,7 @@ from aarush_graph_stuff import Graph, Vertex, euclidean_dist
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 VISION_MODEL = "gemini-2.5-pro"
 chat = None
-experiment_name = "2n8kARJN3HM"
+experiment_name = "29hnd4uzFmX"
 
 def new_chat():
     """Creates a new Gemini chat session."""
@@ -116,32 +116,6 @@ def round_midpoint(midpoint_tuple):
     rounded_y = round(y / 0.15) * 0.15
     return (round(rounded_x, 1), round(rounded_y, 1))
 
-# def find_and_filter_frontiers(robot: Robot, frontier_blacklist: set, max_frontiers=5, max_radius_m=3.0) -> List:
-#     """Finds, filters by blacklist/distance, sorts by distance, and returns the top N frontiers."""
-#     if robot.map_arr is None: return []
-#     all_frontiers = robot.find_frontiers(robot.map_arr, min_length_pixels=20)
-#     if not all_frontiers: return []
-#     robot_pos, _ = robot.pose
-#     frontiers_with_dist = []
-#     for contour in all_frontiers:
-#         midpoint_world = get_frontier_midpoint(contour, robot)
-#         if midpoint_world:
-#             dist = euclidean_dist(robot_pos['x'], robot_pos['y'], midpoint_world[0], midpoint_world[1])
-#             if dist <= max_radius_m:
-#                 frontiers_with_dist.append((dist, midpoint_world, contour))
-    
-#     frontiers_with_dist.sort(key=lambda x: x[0]) # Sort by distance (closest first)
-    
-#     unblacklisted_frontiers = []
-#     for frontier_data in frontiers_with_dist:
-#         midpoint = frontier_data[1]
-#         if round_midpoint(midpoint) not in frontier_blacklist:
-#             unblacklisted_frontiers.append(frontier_data)
-    
-#     if len(unblacklisted_frontiers) < len(frontiers_with_dist):
-#         rospy.loginfo(f"Ignoring {len(frontiers_with_dist) - len(unblacklisted_frontiers)} blacklisted frontiers.")
-
-#     return unblacklisted_frontiers[:max_frontiers]
 
 def find_and_filter_frontiers(robot, cand_x, cand_y, frontier_blacklist: set, max_frontiers=5, max_radius_m=3.0) -> List:
     """Finds, filters by blacklist/distance, sorts by distance, and returns the top N frontiers."""

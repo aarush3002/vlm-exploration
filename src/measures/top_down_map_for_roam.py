@@ -283,7 +283,7 @@ class TopDownMapForRoam(Measure):
                 # fov=self._config.FOG_OF_WAR.FOV,
                 # max_line_len=self._config.FOG_OF_WAR.VISIBILITY_DIST
                 # / maps.calculate_meters_per_pixel(self._map_resolution, sim=self._sim),
-                fov=360,
+                fov=90.0,
                 max_line_len=self._config.FOG_OF_WAR.VISIBILITY_DIST
                 / maps.calculate_meters_per_pixel(self._map_resolution, sim=self._sim),
             )

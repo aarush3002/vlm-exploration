@@ -83,11 +83,11 @@
   <node pkg="ros_x_habitat" type="aarush_rrt_exploration_tracker.py" name="exploration_tracker" output="screen">
         <!-- Timeout in seconds to wait for a new goal before assuming exploration is complete.
              Should be slightly longer than explore_lite's progress_timeout. -->
-        <param name="completion_timeout" value="120.0" /> <!--70-->
+        <param name="completion_timeout" value="180.0" /> <!--70-->
         
         <!-- The folder where the final summary map will be saved. -->
         <!-- <param name="output_folder" value="/home/aarush/final_rrt_results/2t7WUuJeko7/" /> -->
-        <param name="output_folder" value="/home/aarush/final_opencv_results/29hnd4uzFmX/" />
+        <param name="output_folder" value="/home/aarush/final_opencv_results/8WUmhLawc2A/" />
 
         <!-- The map topic the tracker should subscribe to. -->
         <param name="map_topic" value="/grid_map" />

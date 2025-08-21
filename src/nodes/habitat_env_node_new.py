@@ -1,4 +1,4 @@
-#!/usr//bin/env python
+#!/usr/bin/env python
 import argparse
 from threading import Condition, Lock
 
@@ -51,12 +51,8 @@ import cv2
 from habitat.sims.habitat_simulator.habitat_simulator import AgentState
 import quaternion
 
-# START: Matplotlib backend fix
-# Force matplotlib to use a non-GUI backend to prevent Qt errors in headless environments.
-# This must be done before importing pyplot.
 import matplotlib
 matplotlib.use('Agg')
-# END: Matplotlib backend fix
 import matplotlib.pyplot as plt
 
 
@@ -237,14 +233,20 @@ class HabitatEnvNode:
         self.next_log_distance = 0.0
         self.trajectory_log_distance_interval = 0.2 # meters
         self.next_trajectory_log_distance = 0.0
+        
+        # MODIFICATION START: Add variables for inactivity timeout
+        self.last_move_time = None
+        self.no_move_timeout = rospy.Duration(500.0)  # 3 minutes
+        self.movement_threshold = 0.01  # meters, threshold to consider "moved"
+        # MODIFICATION END
 
-        experiment_name = "2n8kARJN3HM" #2t7WUuJeko7
+        experiment_name = "29hnd4uzFmX" #"S9hNv5qa7GM" #"29hnd4uzFmX" #"2n8kARJN3HM" #2t7WUuJeko7 #8WUmhLawc2A
         self.home_dir = f"/home/aarush/final_gemini_results/{experiment_name}"
-        # self.home_dir = f"/home/aarush/final_explore_lite_results/{experiment_name}"
+        #self.home_dir = f"/home/aarush/final_explore_lite_results/{experiment_name}"
         #self.home_dir = f"/home/aarush/final_opencv_results/{experiment_name}"
-        # self.home_dir = f"/home/aarush/final_tare_results/{experiment_name}"
+        #self.home_dir = f"/home/aarush/final_tare_results/{experiment_name}"
         #self.home_dir = f"/home/aarush/final_tare90FOV_results/{experiment_name}"
-        # self.home_dir = f"/home/aarush/final_dsv_results/{experiment_name}"
+        #self.home_dir = f"/home/aarush/final_dsv_results/{experiment_name}"
         # self.home_dir = f"/home/aarush/final_human_results/{experiment_name}"
         self.data_log_filepath = os.path.join(self.home_dir, "distance_vs_exploration.txt")
         self.trajectory_log_filepath = os.path.join(self.home_dir, "total_trajectory.txt")
@@ -260,9 +262,6 @@ class HabitatEnvNode:
             os.makedirs(self.video_frames_dir, exist_ok=True)
             with open(self.data_log_filepath, 'w') as f:
                 f.write("# Distance(m), Exploration(%)\n")
-            # MODIFICATION: The header for trajectory.txt is no longer written.
-            # An empty file will be created on the first write operation if it doesn't exist.
-            # To ensure it's cleared on a new run, we open it in write mode here.
             with open(self.trajectory_log_filepath, 'w') as f:
                 pass
 
@@ -320,6 +319,7 @@ class HabitatEnvNode:
 
             t_reset_start = time.clock()
             self.observations = self.env.reset()
+            self.last_move_time = rospy.Time.now()
             t_reset_end = time.clock()
             with self.timing_lock:
                 self.t_reset_elapsed += t_reset_end - t_reset_start
@@ -518,6 +518,9 @@ class HabitatEnvNode:
         distance_increment = math.sqrt(dx**2 + dy**2)
         self.total_distance += distance_increment
 
+        if distance_increment > self.movement_threshold:
+            self.last_move_time = odom.header.stamp
+
         if self.total_distance >= self.next_log_distance:
             self._log_data()
             self.next_log_distance += self.log_distance_interval
@@ -544,7 +547,6 @@ class HabitatEnvNode:
             # Convert quaternion to Euler angles
             (roll, pitch, yaw) = euler_from_quaternion(quaternion_msg)
 
-            # MODIFICATION: Format the data string with spaces and specific precision.
             log_line = (
                 f"{pos.x:.6f} {pos.y:.6f} {pos.z:.6f} "
                 f"{roll:.6f} {pitch:.6f} {yaw:.6f} {elapsed_time:.6f}\n"
@@ -635,10 +637,18 @@ class HabitatEnvNode:
 
             self.last_frame_save_time = rospy.Time.now()
 
-            while True:
+            while not rospy.is_shutdown():
                 with self.shutdown_lock:
                     if self.shutdown:
                         break
+                
+                if self.last_move_time and (rospy.Time.now() - self.last_move_time > self.no_move_timeout):
+                    rospy.logwarn(
+                        f"No significant movement for over {self.no_move_timeout.to_sec()} seconds. Shutting down."
+                    )
+                    rospy.signal_shutdown("Inactivity timeout")
+                    break
+
                 self.publish_sensor_observations()
                 self.step()
 
@@ -700,7 +710,7 @@ class HabitatEnvNode:
             self.command_cv.notify()
 
     def simulate(self):
-        while True:
+        while not rospy.is_shutdown():
             try:
                 self.reset()
                 with self.shutdown_lock:
@@ -772,7 +782,7 @@ class HabitatEnvNode:
         rospy.loginfo("Executing shutdown sequence...")
         self.save_final_maps()
         self.generate_plot()
-        self._save_summary_files() # Dump summary files
+        self._save_summary_files()
         if self.make_video:
             generate_video(
                 video_option=self.config.VIDEO_OPTION,
