@@ -1,4 +1,5 @@
 **Autonomous Frontier-Based Exploration with High-Level VLM Guidance**
+
 by: Aarush Aitha
 
 This repository builds upon the ros_x_habitat framework to implement a novel approach for autonomous robot exploration. It leverages a Vision Language Model (VLM) to provide high-level guidance to a frontier-based exploration algorithm. The robot navigates and maps an unknown environment, with the VLM helping to identify and prioritize exploration goals.
