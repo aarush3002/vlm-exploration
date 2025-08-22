@@ -8,7 +8,16 @@ To set up this repository, simply follow the instructions provided by ros_x_habi
 
 Key files:
    * habitat_env_node_new.py: A modified version of the Habitat environment node that includes additional functionality for this project.
+        * This file is modified from the original habitat_env_node.py file provided by ROS-x-Habitat.
+            * TF2 Transform Broadcasting: The new node broadcasts the transform between the map and odom frames. This is essential for localization and navigation within a map.
+            * Clock Publisher: A /clock topic is published to provide a consistent time source for all ROS nodes in the simulation, which is especially important for tasks requiring synchronization.
+            * Enhanced Map and Exploration Logging: The script now includes functionality to track and save the robot's trajectory, the explored map, and exploration coverage statistics.
+            * Odometry Publishing: The node now publishes ground-truth nav_msgs/Odometry messages. This provides other ROS nodes with detailed information about the robot's position and velocity.
+            * Camera Info Publisher: The script now publishes sensor_msgs/CameraInfo messages for both the RGB and depth cameras. This provides other nodes with the intrinsic parameters of the cameras, which is needed for many computer vision tasks.
    * roam_no_joy.launch: A ROS launch file to start the autonomous exploration process without the need for manual joystick control.
+       * Image Viewers: It launches two image_view nodes to visualize the RGB and depth images from the robot's camera.
+       * Depth-to-LaserScan Conversion: The depthimage_to_laserscan node is used to convert the depth image from the robot's camera into a laser scan, which is a common input for SLAM and navigation algorithms.
+       * Static Transform Publisher: A static transform is published between the base_frame and laser frames, which is necessary for the robot to know where the laser scanner is located relative to its base.
    * rtabmap_no_hector.launch: A ROS launch file for running the RTAB-Map SLAM algorithm to build a map of the environment. This version is configured to work without Hector SLAM.
    * aarush_original_clean.py: The main Python script that implements the core logic for the frontier-based exploration algorithm with VLM guidance.
    
