@@ -1,4 +1,4 @@
-Autonomous Frontier-Based Exploration with High-Level VLM Guidance
+**Autonomous Frontier-Based Exploration with High-Level VLM Guidance**
 by: Aarush Aitha
 
 This repository builds upon the ros_x_habitat framework to implement a novel approach for autonomous robot exploration. It leverages a Vision Language Model (VLM) to provide high-level guidance to a frontier-based exploration algorithm. The robot navigates and maps an unknown environment, with the VLM helping to identify and prioritize exploration goals.
@@ -6,13 +6,11 @@ This repository builds upon the ros_x_habitat framework to implement a novel app
 To set up this repository, simply follow the instructions provided by ros_x_habitat below.
 
 Key files:
-habitat_env_node_new.py: A modified version of the Habitat environment node that includes additional functionality for this project.
-
-roam_no_joy.launch: A ROS launch file to start the autonomous exploration process without the need for manual joystick control.
-
-rtabmap_no_hector.launch: A ROS launch file for running the RTAB-Map SLAM algorithm to build a map of the environment. This version is configured to work without Hector SLAM.
-
-aarush_original_clean.py: The main Python script that implements the core logic for the frontier-based exploration algorithm with VLM guidance.
+   * habitat_env_node_new.py: A modified version of the Habitat environment node that includes additional functionality for this project.
+   * roam_no_joy.launch: A ROS launch file to start the autonomous exploration process without the need for manual joystick control.
+   * rtabmap_no_hector.launch: A ROS launch file for running the RTAB-Map SLAM algorithm to build a map of the environment. This version is configured to work without Hector SLAM.
+   * aarush_original_clean.py: The main Python script that implements the core logic for the frontier-based exploration algorithm with VLM guidance.
+   
 --------------------------------------------------------------------
 ros_x_habitat
 ==============================
